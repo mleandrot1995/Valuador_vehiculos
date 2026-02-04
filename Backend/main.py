@@ -9,13 +9,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Import oficial de Stagehand (browserbase/stagehand-python)
+# Import oficial de Stagehand
 try:
-    from stagehand import Stagehand
+    from stagehand import AsyncStagehand
 except ImportError:
-    Stagehand = None
+    AsyncStagehand = None
 
-# Parche de loop para Windows (necesario para Playwright/Stagehand)
+# Parche de loop para Windows
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -42,60 +42,56 @@ class ScrapeRequest(BaseModel):
     year: int
     km_max: int
     api_key: str
-    model_provider: str = "google" 
 
 @app.post("/scrape")
 async def scrape_cars(request: ScrapeRequest):
-    logger.info(f"🚀 Iniciando Stagehand Oficial para: {request.brand} {request.model}")
+    logger.info(f"🚀 Iniciando Stagehand para: {request.brand} {request.model}")
     
-    if Stagehand is None:
-        raise HTTPException(status_code=500, detail="Librería Stagehand no instalada correctamente.")
+    if AsyncStagehand is None:
+        raise HTTPException(status_code=500, detail="Stagehand SDK (AsyncStagehand) no encontrado.")
 
-    # --- CONFIGURACIÓN DE STAGEHAND VIA ENTORNO ---
-    os.environ["MODEL_API_KEY"] = request.api_key
-    os.environ["GEMINI_API_KEY"] = request.api_key
-    os.environ["STAGEHAND_API_KEY"] = request.api_key
-    os.environ["STAGEHAND_MODEL_NAME"] = "gemini-1.5-flash"
-    os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
-    
     extracted_data = []
-    stagehand = None
     
+    # Inicialización del cliente asíncrono según la inspección realizada
+    client = AsyncStagehand(
+        model_api_key=request.api_key,
+        server="local",
+        local_headless=False # Visible en Windows para ver la magia de la IA
+    )
+
     try:
-        # CAMBIO: Evitamos 'async with' ya que el objeto parece no soportarlo en esta versión
-        logger.info("Instanciando Stagehand...")
-        stagehand = Stagehand()
+        # 1. Crear una sesión (La inspección mostró que Stagehand tiene 'sessions')
+        logger.info("Creando sesión de Stagehand...")
+        session = await client.sessions.create(
+            model_name="gemini-1.5-flash",
+            model_provider="google"
+        )
         
-        # Intentamos inicializar si el método existe
-        if hasattr(stagehand, 'init'):
-            logger.info("Inicializando Stagehand...")
-            await stagehand.init()
-
+        # 2. Navegación y Acciones (Los métodos están en el objeto de sesión)
         logger.info(f"Navegando a {request.url}...")
-        await stagehand.goto(request.url)
+        await session.goto(request.url)
         
-        # ACCIÓN INTELIGENTE
-        logger.info("IA ejecutando búsqueda...")
-        await stagehand.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}. Utiliza los filtros de búsqueda del sitio si es posible.")
+        logger.info("IA buscando el vehículo...")
+        await session.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}")
         
-        # Espera para que carguen los resultados
-        await asyncio.sleep(7) 
+        # Esperamos a que los resultados se estabilicen visualmente
+        await asyncio.sleep(5) 
 
-        # EXTRACCIÓN ESTRUCTURADA
+        # 3. Extracción estructurada
         logger.info("IA extrayendo datos estructurados...")
-        results = await stagehand.extract(
-            "Lista de autos con: brand (marca), model (modelo), year (año, solo número), km (kilometraje, solo número), price (precio, solo número), currency (moneda), title (título)"
+        results = await session.extract(
+            "Lista de autos con: brand, model, year (number), km (number), price (number), currency, title"
         )
         
         if results and isinstance(results, list):
             for item in results:
                 try:
-                    # Normalización robusta de números
-                    km_str = str(item.get('km', '0'))
-                    km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
+                    # Limpieza robusta de datos numéricos
+                    km_raw = str(item.get('km', '0')).lower()
+                    km = int(''.join(filter(str.isdigit, km_raw))) if any(c.isdigit() for c in km_raw) else 0
                     
-                    price_str = str(item.get('price', '0'))
-                    price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_str.replace(',', ''))))
+                    price_raw = str(item.get('price', '0'))
+                    price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_raw.replace(',', ''))))
                     
                     if km <= request.km_max:
                         extracted_data.append({
@@ -107,33 +103,28 @@ async def scrape_cars(request: ScrapeRequest):
                             "currency": item.get('currency', 'ARS'),
                             "title": item.get('title', 'N/A')
                         })
-                except Exception as parse_err:
-                    logger.warning(f"Error parseando item: {parse_err}")
+                except Exception as e:
+                    logger.warning(f"Error parseando item: {e}")
                     continue
         else:
-            logger.warning("No se recibieron resultados de Stagehand.extract()")
+            logger.warning("La IA no devolvió resultados estructurados en esta sesión.")
 
     except Exception as e:
-        logger.error(f"❌ Error en Stagehand Oficial: {e}")
-        # Fallback de debug para el dashboard
+        logger.error(f"❌ Error en el flujo de Stagehand: {e}")
+        # Fallback de debug para que el dashboard muestre algo
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
-            "currency": "ARS", "title": f"Fallo con Stagehand: {str(e)[:50]}"
+            "currency": "ARS", "title": f"Fallo en Sesión Stagehand: {str(e)[:40]}"
         })
     
     finally:
-        # Cerramos manualmente los recursos
-        if stagehand:
-            try:
-                if hasattr(stagehand, 'close'):
-                    logger.info("Cerrando Stagehand...")
-                    await stagehand.close()
-            except Exception as close_err:
-                logger.error(f"Error al cerrar Stagehand: {close_err}")
+        # Cerrar el cliente para liberar recursos (Chrome)
+        logger.info("Cerrando cliente Stagehand...")
+        await client.close()
 
-    # Guardado de resultados
+    # Persistencia de datos en JSON
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -150,7 +141,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con Stagehand (Official via Env Vars)"
+            "message": "Scraping con arquitectura de Sesiones completado"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
