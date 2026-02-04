@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Cargar .env para obtener la ruta del binario
+# Cargar variables de entorno del archivo .env
 load_dotenv()
 
 # Import oficial de Stagehand
@@ -19,7 +19,7 @@ try:
 except ImportError:
     AsyncStagehand = None
 
-# Parche de loop para Windows (necesario para Playwright/Stagehand)
+# Parche de loop para Windows (necesario para subprocesos)
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -46,18 +46,24 @@ async def scrape_cars(request: ScrapeRequest):
     logger.info(f"🚀 Iniciando Stagehand para: {request.brand} {request.model}")
     
     if AsyncStagehand is None:
-        raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
+        raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado. Instálelo con pip.")
 
-    # Variables de entorno críticas
+    # Asegurar que las variables de entorno para Stagehand estén presentes
+    # Si no están en el .env, las tomamos del request
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
     
+    # Validar que el binario existe si se especificó en el .env
+    sea_binary = os.environ.get("STAGEHAND_SEA_BINARY")
+    if sea_binary and not os.path.exists(sea_binary):
+        logger.warning(f"⚠️ El binario especificado en STAGEHAND_SEA_BINARY no se encuentra en {sea_binary}")
+
     extracted_data = []
     client = None
     
     try:
         # Inicialización del cliente
-        # La ruta del binario se toma automáticamente de STAGEHAND_SEA_BINARY en el .env
+        # Stagehand buscará automáticamente el binario en STAGEHAND_SEA_BINARY
         client = AsyncStagehand(
             model_api_key=request.api_key,
             server="local",
@@ -101,11 +107,12 @@ async def scrape_cars(request: ScrapeRequest):
 
     except Exception as e:
         logger.error(f"❌ Error en Stagehand: {e}")
+        # Fallback de debug
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
-            "currency": "ARS", "title": f"Fallo: {str(e)[:40]}"
+            "currency": "ARS", "title": f"Fallo en Stagehand: {str(e)[:40]}"
         })
     
     finally:
@@ -123,10 +130,11 @@ async def scrape_cars(request: ScrapeRequest):
         all_data.extend(extracted_data)
         with open(DATA_FILE, "w") as f: json.dump(all_data, f, indent=4)
         
+        avg_price = df['price'].mean() if not df.empty else 0
         return {
             "status": "success", "data": extracted_data,
-            "stats": {"average_price": df['price'].mean() if not df.empty else 0, "count": len(extracted_data)},
-            "message": "Scraping completado con binario local"
+            "stats": {"average_price": avg_price, "count": len(extracted_data)},
+            "message": "Scraping completado con binario configurado"
         }
     return {"status": "empty", "message": "No data"}
 
