@@ -52,43 +52,41 @@ async def scrape_cars(request: ScrapeRequest):
         raise HTTPException(status_code=500, detail="Librería Stagehand no instalada correctamente.")
 
     # --- CONFIGURACIÓN DE STAGEHAND VIA ENTORNO ---
-    # La versión oficial requiere MODEL_API_KEY para el cliente de IA
+    # La versión oficial de Browserbase es muy dependiente de estas variables en Windows
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
+    os.environ["STAGEHAND_API_KEY"] = request.api_key
     os.environ["STAGEHAND_MODEL_NAME"] = "gemini-1.5-flash"
     os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
     
     extracted_data = []
     
     try:
-        # Inicialización de Stagehand
-        # Intentamos pasar los parámetros directamente al constructor para evitar ambigüedades
-        async with Stagehand(
-            model_api_key=request.api_key,
-            model_name="gemini-1.5-flash",
-            model_provider="google"
-        ) as stagehand:
+        # Inicialización limpia de Stagehand sin argumentos en el constructor
+        # para evitar errores de 'unexpected keyword argument'
+        async with Stagehand() as stagehand:
             
             logger.info(f"Navegando a {request.url}...")
             await stagehand.goto(request.url)
             
             # ACCIÓN INTELIGENTE
             logger.info("IA ejecutando búsqueda...")
-            await stagehand.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}")
+            await stagehand.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}. Utiliza los filtros de búsqueda del sitio si es posible.")
             
             # Espera para que carguen los resultados
-            await asyncio.sleep(5) 
+            await asyncio.sleep(7) 
 
             # EXTRACCIÓN ESTRUCTURADA
             logger.info("IA extrayendo datos estructurados...")
+            # Usamos una instrucción muy clara para el LLM
             results = await stagehand.extract(
-                "Lista de autos con: brand, model, year (number), km (number), price (number), currency, title"
+                "Lista de autos con: brand (marca), model (modelo), year (año, solo número), km (kilometraje, solo número), price (precio, solo número), currency (moneda), title (título)"
             )
             
             if results and isinstance(results, list):
                 for item in results:
                     try:
-                        # Limpieza y normalización de datos numéricos
+                        # Normalización robusta de números
                         km_str = str(item.get('km', '0'))
                         km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
                         
@@ -108,6 +106,8 @@ async def scrape_cars(request: ScrapeRequest):
                     except Exception as parse_err:
                         logger.warning(f"Error parseando item: {parse_err}")
                         continue
+            else:
+                logger.warning("No se recibieron resultados de Stagehand.extract()")
 
     except Exception as e:
         logger.error(f"❌ Error en Stagehand Oficial: {e}")
@@ -136,7 +136,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con Stagehand"
+            "message": "Scraping completado con Stagehand (Official via Env Vars)"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
