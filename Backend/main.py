@@ -51,26 +51,26 @@ async def scrape_cars(request: ScrapeRequest):
     # Asegurar API Keys en el entorno
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
+    os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
     
     extracted_data = []
     client = None
     
     try:
-        # 1. Instanciar el cliente asíncrono
+        # 1. Instanciar el cliente
         client = AsyncStagehand(
             model_api_key=request.api_key,
             server="local",
             local_headless=False
         )
 
-        # 2. Iniciar sesión (Usamos 'start' según la inspección del objeto sessions)
+        # 2. Iniciar sesión (Solo model_name según la inspección realizada)
         logger.info("Iniciando sesión en Stagehand...")
         session = await client.sessions.start(
-            model_name="gemini-1.5-flash",
-            model_provider="google"
+            model_name="gemini-1.5-flash"
         )
         
-        # 3. Navegar (Usamos 'navigate' según la inspección)
+        # 3. Navegar
         logger.info(f"Navegando a {request.url}...")
         await session.navigate(request.url)
         
@@ -78,10 +78,10 @@ async def scrape_cars(request: ScrapeRequest):
         logger.info("IA ejecutando búsqueda...")
         await session.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}")
         
-        # Tiempo de espera para que la página cargue los resultados
-        await asyncio.sleep(6) 
+        # Tiempo para que la página cargue los resultados tras la acción de búsqueda
+        await asyncio.sleep(7) 
 
-        # 5. Extraer datos
+        # 5. Extraer datos estructurados
         logger.info("IA extrayendo datos estructurados...")
         results = await session.extract(
             "Lista de autos con: brand, model, year (number), km (number), price (number), currency, title"
@@ -90,6 +90,7 @@ async def scrape_cars(request: ScrapeRequest):
         if results and isinstance(results, list):
             for item in results:
                 try:
+                    # Normalización robusta de números
                     km_str = str(item.get('km', '0'))
                     km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
                     
@@ -110,7 +111,7 @@ async def scrape_cars(request: ScrapeRequest):
                     logger.warning(f"Error procesando item: {e}")
                     continue
         
-        # 6. Cerrar sesión (Usamos 'end' según la inspección)
+        # 6. Cerrar sesión
         await session.end()
 
     except Exception as e:
@@ -145,7 +146,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con arquitectura oficial Browserbase"
+            "message": "Scraping completado con parámetros de firma validados"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
