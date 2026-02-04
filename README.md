@@ -4,15 +4,14 @@ Este proyecto es una aplicación de scraping asistido por IA para autos usados, 
 
 ## Estructura del Proyecto
 
-*   `/Backend`: API REST construida con FastAPI, integración con Playwright y lógica de procesamiento de datos.
-*   `/Frontend`: Dashboard interactivo construido con Streamlit.
+*   `/Backend`: API REST construida con FastAPI, integración con Stagehand (IA) y Playwright.
+*   `/Frontend`: Dashboard interactivo con Streamlit.
 
 ## 🚀 Guía de Instalación Local (Fuera de IDX)
 
-Si descargas este repositorio para ejecutarlo en tu máquina local (Windows/Mac/Linux), sigue estos pasos:
-
 ### 1. Prerrequisitos
 *   **Python 3.8+** instalado.
+*   **Node.js 20+** instalado (Requerido por Stagehand). [Descargar aquí](https://nodejs.org/).
 *   **Git** instalado.
 
 ### 2. Clonar el repositorio
@@ -22,8 +21,6 @@ cd Valuador_vehiculos
 ```
 
 ### 3. Configurar Entorno Virtual
-Se recomienda usar un entorno virtual único para simplificar la gestión.
-
 ```bash
 # Windows
 python -m venv .venv
@@ -35,40 +32,30 @@ source .venv/bin/activate
 ```
 
 ### 4. Instalar Dependencias
-Instala las librerías de ambos servicios:
-
 ```bash
 pip install -r Backend/requirements.txt
 pip install -r Frontend/requirements.txt
 ```
 
-### 5. Instalar Navegadores de Playwright
-Necesario para que el scraping funcione:
+### 5. Configuración de Stagehand (Windows)
+Es necesario inicializar el motor de Stagehand manualmente en la carpeta del Backend:
+```powershell
+cd Backend
+npm install stagehand
+node .\node_modules\stagehand\lib\index.js init
+```
 
+### 6. Instalar Navegadores de Playwright
 ```bash
 playwright install
 ```
 
-### 6. Configuración de Variables
-Copia el archivo de ejemplo y configura tus claves (API Keys de Gemini/Ollama):
-
-```bash
-cp .env.example .env
-# Edita .env con tus credenciales reales
-```
-
 ### 7. Ejecutar la Aplicación
-Hemos incluido un script para levantar ambos servicios simultáneamente:
-
 ```bash
 python run_app.py
 ```
-*   Backend: `http://localhost:8000`
-*   Frontend: `http://localhost:8501`
 
 ---
 
 ## 🛠️ Desarrollo en Firebase Studio / Nix
-
-Este proyecto incluye configuración para **Project IDX/Nix**.
-El archivo `.idx/dev.nix` gestiona las dependencias del sistema automáticamente.
+Este proyecto incluye configuración para **Project IDX/Nix** en `.idx/dev.nix`.
