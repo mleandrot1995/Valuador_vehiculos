@@ -5,23 +5,10 @@ import json
 import os
 import pandas as pd
 import uvicorn
+import subprocess
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
-
-# Cargar variables de entorno del archivo .env
-load_dotenv()
-
-# Import oficial de Stagehand
-try:
-    from stagehand import AsyncStagehand
-except ImportError:
-    AsyncStagehand = None
-
-# Parche de loop para Windows (necesario para subprocesos)
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,117 +30,61 @@ class ScrapeRequest(BaseModel):
 
 @app.post("/scrape")
 async def scrape_cars(request: ScrapeRequest):
-    logger.info(f"🚀 Iniciando Stagehand para: {request.brand} {request.model}")
-    
-    if AsyncStagehand is None:
-        raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
-
-    # Asegurar API Keys y bypass para el motor local en Windows
-    os.environ["MODEL_API_KEY"] = request.api_key
-    os.environ["GEMINI_API_KEY"] = request.api_key
-    os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
-    os.environ["BROWSERBASE_API_KEY"] = "local-bypass"
-    os.environ["BROWSERBASE_PROJECT_ID"] = "local-bypass"
+    logger.info(f"🚀 Iniciando Bridge Node-Stagehand para: {request.brand} {request.model}")
     
     extracted_data = []
-    client = None
     
     try:
-        # 1. Instanciar el cliente
-        client = AsyncStagehand(
-            model_api_key=request.api_key,
-            browserbase_api_key="local-bypass",
-            browserbase_project_id="local-bypass",
-            server="local",
-            local_headless=False
-        )
-
-        # 2. Iniciar sesión con cabeceras requeridas para evitar el error 400/401
-        logger.info("Iniciando sesión en Stagehand...")
-        session = await client.sessions.start(
-            model_name="gemini-1.5-flash",
-            extra_headers={
-                "X-Browserbase-API-Key": "local-bypass",
-                "X-Browserbase-Project-Id": "local-bypass"
-            }
-        )
+        # Ejecutamos el script de Node.js directamente
+        # Esto salta todos los problemas de autenticación del SDK de Python
+        cmd = [
+            "node", 
+            "scraper.js", 
+            request.brand, 
+            request.model, 
+            str(request.year), 
+            request.url, 
+            request.api_key
+        ]
         
-        session_id = session.id
-        logger.info(f"✅ Sesión iniciada con ID: {session_id}")
-        
-        # 3. Navegar (La firma requiere 'id' como primer argumento)
-        logger.info(f"Navegando a {request.url}...")
-        await client.sessions.navigate(session_id, url=request.url)
-        
-        # 4. Actuar (La firma requiere 'id' y 'input')
-        logger.info("IA ejecutando búsqueda...")
-        await client.sessions.act(
-            session_id, 
-            input=f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}"
+        logger.info(f"Lanzando Stagehand (Node.js)...")
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=os.getcwd()
         )
         
-        # Pausa para estabilización tras la búsqueda
-        await asyncio.sleep(7) 
-
-        # 5. Extraer (La firma requiere 'id' e 'instruction')
-        logger.info("IA extrayendo datos estructurados...")
-        extract_response = await client.sessions.extract(
-            session_id,
-            instruction="Lista de autos con: brand, model, year (number), km (number), price (number), currency, title"
-        )
+        stdout, stderr = await process.communicate()
         
-        # Procesar la respuesta de extracción
-        # La estructura depende del objeto de respuesta del SDK (AsyncSessionExtractResponse)
-        results = []
-        if hasattr(extract_response, 'output'):
-            results = extract_response.output
-        elif hasattr(extract_response, 'data'):
-            results = extract_response.data
-        elif isinstance(extract_response, dict):
-            results = extract_response.get('output', [])
-
-        if results and isinstance(results, list):
-            for item in results:
-                try:
-                    km_str = str(item.get('km', '0'))
-                    km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
-                    
-                    price_str = str(item.get('price', '0'))
-                    price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_raw.replace(',', ''))))
-                    
-                    if km <= request.km_max:
-                        extracted_data.append({
-                            "brand": item.get('brand', request.brand),
-                            "model": item.get('model', request.model),
-                            "year": int(item.get('year', request.year)),
-                            "km": km,
-                            "price": price,
-                            "currency": item.get('currency', 'ARS'),
-                            "title": item.get('title', 'N/A')
-                        })
-                except Exception as e:
-                    logger.warning(f"Error parseando item: {e}")
-                    continue
-        
-        # 6. Finalizar sesión
-        await client.sessions.end(session_id)
+        if process.returncode == 0:
+            # Leer el archivo temporal generado por Node
+            temp_file = "temp_results.json"
+            if os.path.exists(temp_file):
+                with open(temp_file, "r") as f:
+                    results = json.load(f)
+                
+                for item in results:
+                    if int(item.get('km', 0)) <= request.km_max:
+                        extracted_data.append(item)
+                
+                os.remove(temp_file) # Limpiar
+                logger.info(f"✅ Scraper finalizado con {len(extracted_data)} resultados.")
+        else:
+            error_msg = stderr.decode()
+            logger.error(f"❌ Error en el proceso de Node: {error_msg}")
+            raise Exception(f"Node Error: {error_msg}")
 
     except Exception as e:
-        logger.error(f"❌ Error en el flujo de Stagehand: {e}")
-        # Fallback de debug
+        logger.error(f"❌ Error en el Bridge: {e}")
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
-            "currency": "ARS", "title": f"Detección Fallida (Error: {str(e)[:40]})"
+            "currency": "ARS", "title": f"Fallback (Bridge): {str(e)[:40]}"
         })
-    
-    finally:
-        # Cerrar el cliente
-        if client:
-            await client.close()
 
-    # Guardado de resultados en JSON
+    # Persistencia
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -167,10 +98,9 @@ async def scrape_cars(request: ScrapeRequest):
         
         avg_price = df['price'].mean() if not df.empty else 0
         return {
-            "status": "success",
-            "data": extracted_data,
+            "status": "success", "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con arquitectura de IDs y Bypass"
+            "message": "Scraping completado vía Stagehand Original (Node.js)"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
