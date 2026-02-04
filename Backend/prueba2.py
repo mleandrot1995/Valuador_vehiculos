@@ -4,7 +4,8 @@ import sys
 from stagehand import Stagehand
 
 # Usamos GEMINI_API_KEY o MODEL_API_KEY
-api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("MODEL_API_KEY")
+api_key = model_name = os.environ.get("MODEL_API_KEY")
+model_name = os.environ.get("STAGEHAND_MODEL", "google/gemini-2.0-flash")
 
 if not api_key:
     print("❌ Error: Configura GEMINI_API_KEY en tu entorno")
@@ -22,7 +23,7 @@ try:
 
     print("🔧 Iniciando sesión...")
     session = client.sessions.start(
-        model_name="gemini-2.0-flash", # Usa este nombre que es más estable en el SEA
+        model_name=model_name, # Usa este nombre que es más estable en el SEA
         browser={
             "type": "local",
             "launchOptions": {},
@@ -32,7 +33,7 @@ try:
     print(f"✅ Sesión iniciada: {session_id}")
 
     # CORRECCIÓN DE URL
-    target_url = "https://www.mercadolibre.com.ar" 
+    target_url = "https://www.kavak.com" 
     print(f"\n📍 Navegando a {target_url}...")
     client.sessions.navigate(id=session_id, url=target_url)
     
@@ -41,17 +42,32 @@ try:
     time.sleep(2) 
     
     print("ejecuto prueba...")
-    response = client.sessions.act(
-        id=session_id,
-        input="ir a autos usados, en donde se tiene que ver todo el marketplace de autos usados y no accesorios de autos, verificar que se ingreso correctamente",
-    )
+    #response = client.sessions.act(
+    #    id=session_id,
+    #    input="ir a autos usados, en donde se tiene que ver todo el marketplace de autos usados " \
+    #    "y no accesorios de autos, verificar que se ingreso correctamente"
+    #    )
+    #print(response.data)
+
+    response = client.sessions.execute(
+            id=session_id,
+            execute_options={
+                "instruction": "Siempre ir a la versión de Argentina, al marketplace de autos usados, "
+                "en donde se tiene que ver todo el marketplace de autos usados " \
+                "y no accesorios de autos, verificar que se ingreso correctamente",
+                "max_steps": 20,
+            },
+            agent_config={
+                "model": {"model_name":"google/gemini-2.0-flash"},
+            },
+        )
     print(response.data)
 
 
 
     print("🖱️ Interactuando con la página...")
     try:
-        # CAMBIO CLAVE: Se usa 'input' en lugar de 'instruction' para .act()
+        # CAMBIO CLAVE: Se usa 'input' en lugar de 'instruction' para .execute()
         client.sessions.act(
             id=session_id,
             input="Acepta las cookies si aparece el cartel"
@@ -65,19 +81,21 @@ try:
     try:
         # Para .extract() el argumento SI suele ser 'instruction'
         print("🔍 Filtrando por marca...")
-        result = client.sessions.execute(
+        result = client.sessions.act(
             id=session_id,
             input="Realizar el filtrado de la busqueda utilizando los filtros correspondientes de marca (puede estar como lista desplegable)" \
             " y seleccionar o completar con 'Renault', verificar que la selección haya sido aplicada correctamente" 
         )
+
+
         print("🔍 Filtrando por modelo...")
-        result = client.sessions.execute(
+        result = client.sessions.act(
             id=session_id,
             input="Realizar el filtrado de la busqueda utilizando los filtros correspondientes de marca (puede estar como lista desplegable)" \
             "y seleccionar o completar con 'Sandero', verificar que la selección haya sido aplicada correctamente" 
         )
         print("🔍 ejecutar busqueda...")
-        result = client.sessions.execute(
+        result = client.sessions.act(
             id=session_id,
             input="Verificar si es necesario pulsar algún botón para ejecutar la búsqueda " \
             "y pulsarlo si es así. En caso contrario omitir este paso" 

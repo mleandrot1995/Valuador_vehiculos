@@ -20,7 +20,7 @@ async def main():
         print("⏳ Iniciando sesión en el servidor local...")
         # Pasamos el parámetro para que NO sea headless
         session = client.sessions.start(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-2.5-flash-preview-04-17",
             browser={
                 "type": "local",
                 "launchOptions": {
