@@ -48,23 +48,28 @@ async def scrape_cars(request: ScrapeRequest):
     if AsyncStagehand is None:
         raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
 
-    # Asegurar API Keys en el entorno
+    # Asegurar API Keys y cabeceras dummy para el motor local
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
     os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
+    # Valores ficticios para evitar el error 'Missing required headers for browserbase sessions'
+    os.environ["BROWSERBASE_API_KEY"] = "local"
+    os.environ["BROWSERBASE_PROJECT_ID"] = "local"
     
     extracted_data = []
     client = None
     
     try:
-        # 1. Instanciar el cliente
+        # 1. Instanciar el cliente con parámetros dummy para satisfacer al motor
         client = AsyncStagehand(
             model_api_key=request.api_key,
+            browserbase_api_key="local",
+            browserbase_project_id="local",
             server="local",
             local_headless=False
         )
 
-        # 2. Iniciar sesión (Solo model_name según la inspección realizada)
+        # 2. Iniciar sesión
         logger.info("Iniciando sesión en Stagehand...")
         session = await client.sessions.start(
             model_name="gemini-1.5-flash"
@@ -90,7 +95,6 @@ async def scrape_cars(request: ScrapeRequest):
         if results and isinstance(results, list):
             for item in results:
                 try:
-                    # Normalización robusta de números
                     km_str = str(item.get('km', '0'))
                     km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
                     
@@ -146,7 +150,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con parámetros de firma validados"
+            "message": "Scraping completado con bypass de cabeceras Browserbase"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
