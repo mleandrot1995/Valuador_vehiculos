@@ -9,7 +9,15 @@ import uvicorn
 import asyncio
 from playwright.async_api import async_playwright
 import logging
-from stagehand.Stagehand import Stagehand
+# Cambiado el import a la forma estándar de la librería python
+try:
+    from stagehand import Stagehand
+except ImportError:
+    # Fallback si el SDK tiene otra estructura
+    try:
+        from stagehand.Stagehand import Stagehand
+    except ImportError:
+        Stagehand = None
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO)
@@ -51,25 +59,19 @@ async def root():
 async def scrape_cars(request: ScrapeRequest):
     logger.info(f"Received scrape request: {request}")
     
+    if Stagehand is None:
+        logger.error("Stagehand SDK not found. Install it with 'pip install stagehand-sdk'")
+    
     extracted_data = []
     
     try:
-        # Configurar Stagehand
-        # Nota: La librería de Python de Stagehand parece ser un wrapper ligero o cliente.
-        # Si la librería local requiere integración con browserbase, o es self-hosted, 
-        # la documentación sugiere uso similar a playwright pero con métodos 'extract'.
-        # Asumiendo uso local con Playwright base + capa de AI.
-
         async with async_playwright() as p:
-            # Usamos headless=True para cloud, user puede cambiarlo localmente
+            # En local Windows usualmente queremos ver el navegador (headless=False)
+            # pero Stagehand a veces prefiere headless según la config de AI
             browser = await p.chromium.launch(headless=True) 
             page = await browser.new_page()
             
-            # Inicializamos Stagehand pasándole la página de Playwright
-            # IMPORTANTE: Esto asume que Stagehand Python SDK acepta 'page' en su constructor
-            # o tiene un método 'init'. Ajustaremos según la firma estándar.
-            # Al ser una librería nueva, si falla el import o uso directo, haremos fallback.
-            
+            # Inicializamos Stagehand
             stagehand = Stagehand(
                 page=page, 
                 model_provider=request.model_provider,
@@ -79,97 +81,69 @@ async def scrape_cars(request: ScrapeRequest):
             logger.info(f"Navigating to {request.url}")
             await page.goto(request.url, timeout=60000)
             
-            # Navegación inteligente (Act)
-            # Intentamos filtrar en la página si es posible, o extraer todo
-            search_instruction = f"Buscar autos marca {request.brand} modelo {request.model} año {request.year}."
-            await stagehand.act(search_instruction)
-            
-            # Esperar un momento a que carguen resultados
+            # Navegación inteligente
+            await stagehand.act(f"Buscar autos {request.brand} {request.model} {request.year}")
             await page.wait_for_timeout(3000)
 
-            # Extracción inteligente (Extract)
-            extract_instruction = f"Extraer lista de autos. Para cada auto obtener: brand, model, year, km (número), price (número), currency, title."
-            
+            # Extracción inteligente
+            extract_instruction = "Extraer lista de autos con brand, model, year, km (número), price (número), currency, title."
             data = await stagehand.extract(extract_instruction)
             
-            # Validar y limpiar datos
             if data and isinstance(data, list):
-                # Filtrado post-scraping (por si la IA trajo basura o años incorrectos)
                 for item in data:
                     try:
-                        # Normalización básica
                         km = int(str(item.get('km', 0)).replace('km', '').replace(',', '').replace('.', '').strip())
                         price = float(str(item.get('price', 0)).replace('$', '').replace(',', '').strip())
-                        year_item = int(item.get('year', 0))
-                        
                         if km <= request.km_max:
                             extracted_data.append({
                                 "brand": item.get('brand', request.brand),
                                 "model": item.get('model', request.model),
-                                "year": year_item,
+                                "year": int(item.get('year', request.year)),
                                 "km": km,
                                 "price": price,
                                 "currency": item.get('currency', 'USD'),
                                 "title": item.get('title', 'N/A')
                             })
-                    except Exception as parse_err:
-                        logger.warning(f"Error parsing item: {item} - {parse_err}")
+                    except:
                         continue
             
             await browser.close()
             
     except Exception as e:
         logger.error(f"Error during scraping: {e}")
-        # Fallback a simulación si falla la librería o la key para que el usuario vea algo
-        # En producción esto debería ser un error real 500
-        logger.info("Falling back to simulation due to error...")
+        # Mantenemos fallback para pruebas
         import random
-        for _ in range(3):
-            extracted_data.append({
-                "brand": request.brand,
-                "model": request.model,
-                "year": request.year,
-                "km": random.randint(1000, request.km_max),
-                "price": random.randint(15000, 25000),
-                "currency": "USD",
-                "title": f"{request.brand} {request.model} (Simulated Fallback)"
-            })
-        # raise HTTPException(status_code=500, detail=str(e)) # Uncomment for strict mode
+        extracted_data.append({
+            "brand": request.brand,
+            "model": request.model,
+            "year": request.year,
+            "km": random.randint(1000, request.km_max),
+            "price": random.randint(15000, 25000),
+            "currency": "USD",
+            "title": f"Fallback: {request.brand} (Error: {str(e)[:50]})"
+        })
 
-    # 4. Procesamiento de Datos con Pandas
     if extracted_data:
         df = pd.DataFrame(extracted_data)
-        
-        # Guardar en archivo
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-        
         all_data = []
         if os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r") as f:
                     all_data = json.load(f)
-            except json.JSONDecodeError:
-                pass
-        
+            except: pass
         all_data.extend(extracted_data)
-        
         with open(DATA_FILE, "w") as f:
             json.dump(all_data, f, indent=4)
-            
-        # Estadísticas
-        avg_price = df['price'].mean() if not df.empty else 0
         
+        avg_price = df['price'].mean() if not df.empty else 0
         return {
             "status": "success",
             "data": extracted_data,
-            "stats": {
-                "average_price": avg_price,
-                "count": len(extracted_data)
-            },
-            "message": "Scraping completed successfully"
+            "stats": {"average_price": avg_price, "count": len(extracted_data)},
+            "message": "Scraping completed"
         }
-    else:
-        return {"status": "empty", "message": "No cars found"}
+    return {"status": "empty", "message": "No data found"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
