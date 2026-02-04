@@ -1,23 +1,26 @@
 import os
 import sys
-import subprocess
 
-def download_binary():
-    print("🔍 Buscando binario de Stagehand para Windows...")
-    
-    # Intentamos ejecutar el script interno de la librería para descargar el binario
+def download_manual():
+    print("🔍 Buscando función de descarga en stagehand.lib.sea_binary...")
     try:
-        import stagehand
-        # La librería suele incluir un script para esto
-        # Intentamos ejecutarlo via módulo
-        print("📥 Descargando binario oficial...")
-        subprocess.check_call([sys.executable, "-m", "stagehand.scripts.download_binary"])
-        print("✅ Binario descargado exitosamente.")
+        # Intentamos importar la función desde la ruta que vimos en el error
+        from stagehand.lib.sea_binary import download_binary
+        print("📥 Iniciando descarga del binario SEA...")
+        download_binary()
+        print("✅ ¡Binario descargado exitosamente!")
+        
+        # Verificamos la ruta donde debería estar
+        target_path = os.path.join(sys.prefix, "Lib", "bin", "sea", "stagehand-win32-x64.exe")
+        if os.path.exists(target_path):
+            print(f"📍 Confirmado: El archivo existe en {target_path}")
+        else:
+            print(f"⚠️ El archivo se descargó pero no lo encuentro en la ruta esperada: {target_path}")
+            
+    except ImportError as e:
+        print(f"❌ No se pudo encontrar el módulo de descarga: {e}")
     except Exception as e:
-        print(f"❌ Error al descargar automáticamente: {e}")
-        print("\n💡 Por favor, intenta ejecutar este comando manualmente en tu terminal:")
-        print(f"source .venv/bin/activate  (o activa tu venv)")
-        print(f"python -m stagehand.scripts.download_binary")
+        print(f"❌ Ocurrió un error durante la descarga: {e}")
 
 if __name__ == "__main__":
-    download_binary()
+    download_manual()
