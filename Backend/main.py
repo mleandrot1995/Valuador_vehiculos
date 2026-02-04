@@ -9,9 +9,22 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# --- PARCHE PARA WINDOWS ---
+# --- PARCHE CRÍTICO PARA WINDOWS ---
 if sys.platform == 'win32':
+    # 1. Política de bucle de eventos para Playwright
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    
+    # 2. Forzar inclusión de carpetas de binarios en el PATH
+    # Buscamos la carpeta node_modules/.bin local del proyecto (en Backend)
+    # y la carpeta de npm global
+    local_node_bin = os.path.join(os.getcwd(), "node_modules", ".bin")
+    if os.path.exists(local_node_bin):
+        os.environ["PATH"] = local_node_bin + os.pathsep + os.environ["PATH"]
+    
+    # También intentamos con la carpeta del proyecto raíz por si acaso
+    root_node_bin = os.path.join(os.path.dirname(os.getcwd()), "node_modules", ".bin")
+    if os.path.exists(root_node_bin):
+        os.environ["PATH"] = root_node_bin + os.pathsep + os.environ["PATH"]
 
 try:
     from stagehand import Stagehand
@@ -50,6 +63,7 @@ async def scrape_cars(request: ScrapeRequest):
     if Stagehand is None:
         raise HTTPException(status_code=500, detail="stagehand-sdk no instalado")
 
+    # Claves necesarias para Stagehand
     os.environ["GEMINI_API_KEY"] = request.api_key
     os.environ["STAGEHAND_API_KEY"] = request.api_key
     
@@ -57,7 +71,7 @@ async def scrape_cars(request: ScrapeRequest):
     stagehand = None
     
     try:
-        # CAMBIO: Instanciación directa sin 'async with'
+        # Instanciamos Stagehand
         stagehand = Stagehand(
             env="local", 
             model_name="gemini-1.5-flash", 
@@ -65,8 +79,7 @@ async def scrape_cars(request: ScrapeRequest):
             headless=False
         )
         
-        # Algunas versiones del SDK requieren un init() explícito, 
-        # lo intentamos por si acaso
+        # Inicialización manual si es requerida por el SDK
         if hasattr(stagehand, 'init'):
             await stagehand.init()
 
@@ -74,11 +87,11 @@ async def scrape_cars(request: ScrapeRequest):
         await stagehand.goto(request.url)
         
         logger.info("IA buscando el vehículo...")
-        await stagehand.act(f"Busca autos {request.brand} {request.model} año {request.year}")
+        await stagehand.act(f"Buscar autos marca {request.brand} modelo {request.model} año {request.year}. Usa los filtros si existen.")
         
         await asyncio.sleep(5) 
 
-        logger.info("IA extrayendo datos...")
+        logger.info("IA extrayendo datos estructurados...")
         results = await stagehand.extract(
             "Lista de autos con: brand, model, year, km, price, currency, title"
         )
@@ -109,17 +122,15 @@ async def scrape_cars(request: ScrapeRequest):
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
-            "currency": "ARS", "title": f"Detección Fallida (Protocol Fix): {str(e)[:40]}"
+            "currency": "ARS", "title": f"Fallo: {str(e)[:40]}"
         })
     
     finally:
-        # Cerramos el navegador manualmente si el objeto existe y tiene el método close
         if stagehand and hasattr(stagehand, 'close'):
-            try:
-                await stagehand.close()
-            except:
-                pass
+            try: await stagehand.close()
+            except: pass
 
+    # Persistencia
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
