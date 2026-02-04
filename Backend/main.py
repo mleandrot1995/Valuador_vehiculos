@@ -5,26 +5,39 @@ import json
 import os
 import pandas as pd
 import uvicorn
+import subprocess
+import shutil
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# --- PARCHE CRÍTICO PARA WINDOWS ---
+# --- PARCHE DE NIVEL ARQUITECTO PARA COMPATIBILIDAD WINDOWS ---
 if sys.platform == 'win32':
-    # 1. Política de bucle de eventos para Playwright
+    # 1. Política de bucle de eventos
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     
-    # 2. Forzar inclusión de carpetas de binarios en el PATH
-    # Buscamos la carpeta node_modules/.bin local del proyecto (en Backend)
-    # y la carpeta de npm global
-    local_node_bin = os.path.join(os.getcwd(), "node_modules", ".bin")
-    if os.path.exists(local_node_bin):
-        os.environ["PATH"] = local_node_bin + os.pathsep + os.environ["PATH"]
+    # 2. Interceptor de Subprocesos: Corrige el error [WinError 2]
+    # Este parche intercepta las llamadas de Stagehand al sistema y añade .cmd donde sea necesario
+    _original_popen = subprocess.Popen
+    def _patched_popen(args, **kwargs):
+        if isinstance(args, list) and len(args) > 0:
+            executable = args[0]
+            # Si el comando es npx, node o npm, buscamos su ruta absoluta con extensión .cmd/.exe
+            if executable in ['npx', 'npm', 'stagehand', 'node']:
+                full_path = shutil.which(executable)
+                if not full_path:
+                    # Intento manual para npx.cmd o npm.cmd
+                    full_path = shutil.which(f"{executable}.cmd")
+                if full_path:
+                    args[0] = full_path
+                
+                # En Windows, para ejecutar .cmd a menudo se requiere shell=True
+                if args[0].endswith('.cmd'):
+                    kwargs['shell'] = True
+        return _original_popen(args, **kwargs)
     
-    # También intentamos con la carpeta del proyecto raíz por si acaso
-    root_node_bin = os.path.join(os.path.dirname(os.getcwd()), "node_modules", ".bin")
-    if os.path.exists(root_node_bin):
-        os.environ["PATH"] = root_node_bin + os.pathsep + os.environ["PATH"]
+    subprocess.Popen = _patched_popen
+    logging.info("🛠️ Parche de compatibilidad Windows aplicado a subprocess.Popen")
 
 try:
     from stagehand import Stagehand
@@ -63,7 +76,7 @@ async def scrape_cars(request: ScrapeRequest):
     if Stagehand is None:
         raise HTTPException(status_code=500, detail="stagehand-sdk no instalado")
 
-    # Claves necesarias para Stagehand
+    # Configuración de claves
     os.environ["GEMINI_API_KEY"] = request.api_key
     os.environ["STAGEHAND_API_KEY"] = request.api_key
     
@@ -72,6 +85,7 @@ async def scrape_cars(request: ScrapeRequest):
     
     try:
         # Instanciamos Stagehand
+        # Usamos google como provider ya que Gemini es de Google
         stagehand = Stagehand(
             env="local", 
             model_name="gemini-1.5-flash", 
@@ -79,7 +93,6 @@ async def scrape_cars(request: ScrapeRequest):
             headless=False
         )
         
-        # Inicialización manual si es requerida por el SDK
         if hasattr(stagehand, 'init'):
             await stagehand.init()
 
@@ -87,13 +100,15 @@ async def scrape_cars(request: ScrapeRequest):
         await stagehand.goto(request.url)
         
         logger.info("IA buscando el vehículo...")
-        await stagehand.act(f"Buscar autos marca {request.brand} modelo {request.model} año {request.year}. Usa los filtros si existen.")
+        # Instrucción para que la IA navegue
+        await stagehand.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}. Usa los filtros del sitio.")
         
-        await asyncio.sleep(5) 
+        await asyncio.sleep(6) 
 
         logger.info("IA extrayendo datos estructurados...")
+        # Instrucción para que la IA extraiga JSON
         results = await stagehand.extract(
-            "Lista de autos con: brand, model, year, km, price, currency, title"
+            "Lista de autos con: brand, model, year (número), km (número), price (número), currency, title"
         )
         
         if results and isinstance(results, list):
@@ -109,8 +124,7 @@ async def scrape_cars(request: ScrapeRequest):
                             "brand": item.get('brand', request.brand),
                             "model": item.get('model', request.model),
                             "year": int(item.get('year', request.year)),
-                            "km": km,
-                            "price": price,
+                            "km": km, "price": price,
                             "currency": item.get('currency', 'ARS'),
                             "title": item.get('title', 'N/A')
                         })
@@ -118,11 +132,12 @@ async def scrape_cars(request: ScrapeRequest):
 
     except Exception as e:
         logger.error(f"❌ Error en Stagehand: {e}")
+        # Fallback debug
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
-            "currency": "ARS", "title": f"Fallo: {str(e)[:40]}"
+            "currency": "ARS", "title": f"Fallo en Stagehand: {str(e)[:50]}"
         })
     
     finally:
@@ -130,7 +145,7 @@ async def scrape_cars(request: ScrapeRequest):
             try: await stagehand.close()
             except: pass
 
-    # Persistencia
+    # Persistencia de datos
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
