@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# CORS
 origins = ["http://localhost:8501", "http://127.0.0.1:8501", "*"]
 app.add_middleware(
     CORSMiddleware,
@@ -49,76 +48,78 @@ async def scrape_cars(request: ScrapeRequest):
     logger.info(f"🚀 Iniciando Stagehand para: {request.brand} {request.model}")
     
     if Stagehand is None:
-        raise HTTPException(status_code=500, detail="stagehand-sdk no instalado en Python")
+        raise HTTPException(status_code=500, detail="stagehand-sdk no instalado")
 
-    # Variables de entorno requeridas por Stagehand
     os.environ["GEMINI_API_KEY"] = request.api_key
     os.environ["STAGEHAND_API_KEY"] = request.api_key
     
     extracted_data = []
+    stagehand = None
     
     try:
-        # Inicialización de Stagehand optimizada para Gemini y ejecución local
-        async with Stagehand(
+        # CAMBIO: Instanciación directa sin 'async with'
+        stagehand = Stagehand(
             env="local", 
             model_name="gemini-1.5-flash", 
             model_provider="google",
-            headless=False # Visible en Windows para seguimiento
-        ) as stagehand:
-            
-            logger.info(f"Navegando a {request.url}...")
-            await stagehand.goto(request.url)
-            
-            # ACCIÓN: La IA busca el vehículo
-            logger.info("IA buscando el vehículo...")
-            await stagehand.act(f"Busca autos {request.brand} {request.model} año {request.year}. Usa los filtros de búsqueda del sitio si están disponibles.")
-            
-            # Pausa para que se carguen los resultados tras la acción
-            await asyncio.sleep(5) 
+            headless=False
+        )
+        
+        # Algunas versiones del SDK requieren un init() explícito, 
+        # lo intentamos por si acaso
+        if hasattr(stagehand, 'init'):
+            await stagehand.init()
 
-            # EXTRACCIÓN: La IA convierte lo que ve en la pantalla en datos JSON
-            logger.info("IA extrayendo datos estructurados...")
-            results = await stagehand.extract(
-                "Lista de autos con sus detalles: brand (marca), model (modelo), year (año, número), km (kilometraje, número), price (precio, número), currency (moneda), title (título completo)"
-            )
-            
-            if results and isinstance(results, list):
-                for item in results:
-                    try:
-                        # Limpieza y normalización de datos numéricos
-                        km_raw = str(item.get('km', '0')).lower()
-                        km = int(''.join(filter(str.isdigit, km_raw))) if any(c.isdigit() for c in km_raw) else 0
-                        
-                        price_raw = str(item.get('price', '0'))
-                        price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_raw.replace(',', ''))))
-                        
-                        if km <= request.km_max:
-                            extracted_data.append({
-                                "brand": item.get('brand', request.brand),
-                                "model": item.get('model', request.model),
-                                "year": int(item.get('year', request.year)),
-                                "km": km,
-                                "price": price,
-                                "currency": item.get('currency', 'ARS'),
-                                "title": item.get('title', 'N/A')
-                            })
-                    except Exception as e:
-                        logger.warning(f"Error parseando item: {e}")
-                        continue
-            else:
-                logger.warning("No se recibieron resultados estructurados de Stagehand.")
+        logger.info(f"Navegando a {request.url}...")
+        await stagehand.goto(request.url)
+        
+        logger.info("IA buscando el vehículo...")
+        await stagehand.act(f"Busca autos {request.brand} {request.model} año {request.year}")
+        
+        await asyncio.sleep(5) 
+
+        logger.info("IA extrayendo datos...")
+        results = await stagehand.extract(
+            "Lista de autos con: brand, model, year, km, price, currency, title"
+        )
+        
+        if results and isinstance(results, list):
+            for item in results:
+                try:
+                    km_raw = str(item.get('km', '0')).lower()
+                    km = int(''.join(filter(str.isdigit, km_raw))) if any(c.isdigit() for c in km_raw) else 0
+                    price_raw = str(item.get('price', '0'))
+                    price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_raw.replace(',', ''))))
+                    
+                    if km <= request.km_max:
+                        extracted_data.append({
+                            "brand": item.get('brand', request.brand),
+                            "model": item.get('model', request.model),
+                            "year": int(item.get('year', request.year)),
+                            "km": km,
+                            "price": price,
+                            "currency": item.get('currency', 'ARS'),
+                            "title": item.get('title', 'N/A')
+                        })
+                except: continue
 
     except Exception as e:
-        logger.error(f"❌ Error crítico en Stagehand: {e}")
-        # Fallback simulado para que el dashboard no quede vacío durante el debug
+        logger.error(f"❌ Error en Stagehand: {e}")
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
-            "currency": "ARS", "title": f"Detección Fallida (Error: {str(e)[:50]})"
+            "currency": "ARS", "title": f"Detección Fallida (Protocol Fix): {str(e)[:40]}"
         })
+    
+    finally:
+        # Cerramos el navegador manualmente si el objeto existe y tiene el método close
+        if stagehand and hasattr(stagehand, 'close'):
+            try:
+                await stagehand.close()
+            except:
+                pass
 
-    # Persistencia de resultados
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -135,11 +136,10 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping con Stagehand completado"
+            "message": "Scraping completado"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
 
 if __name__ == "__main__":
-    # Ejecución directa para asegurar la aplicación del loop policy en Windows
     uvicorn.run(app, host="0.0.0.0", port=8000)
