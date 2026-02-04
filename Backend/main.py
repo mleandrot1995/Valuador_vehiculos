@@ -1,3 +1,11 @@
+import asyncio
+import sys
+import logging
+
+# PARCHE PARA WINDOWS: DEBE EJECUTARSE ANTES DE CUALQUIER IMPORT DE PLAYWRIGHT O UVICORN
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,14 +14,7 @@ import json
 import os
 import pandas as pd
 import uvicorn
-import asyncio
-import sys
 from playwright.async_api import async_playwright
-import logging
-
-# PARCHE PARA WINDOWS
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 try:
     from stagehand import Stagehand
@@ -56,44 +57,42 @@ async def root():
 async def scrape_cars(request: ScrapeRequest):
     logger.info(f"Received scrape request: {request}")
     
-    if Stagehand is None:
-        logger.error("Stagehand SDK not found.")
-    
     extracted_data = []
     
     try:
         async with async_playwright() as p:
-            # CAMBIO AQUÍ: headless=False para ver la navegación localmente
-            # slow_mo=500 ayuda a ver qué está haciendo la IA paso a paso
+            # En local Windows, intentamos ver la navegación
             browser = await p.chromium.launch(headless=False, slow_mo=500) 
             page = await browser.new_page()
             
-            stagehand = Stagehand(
-                page=page, 
-                model_provider=request.model_provider,
-                api_key=request.api_key
-            )
+            if Stagehand:
+                stagehand = Stagehand(
+                    page=page, 
+                    model_provider=request.model_provider,
+                    api_key=request.api_key
+                )
 
-            logger.info(f"Navigating to {request.url}")
-            await page.goto(request.url, timeout=60000)
-            
-            # La IA tomará el control aquí
-            logger.info("IA iniciando búsqueda...")
-            await stagehand.act(f"Buscar autos {request.brand} {request.model} {request.year}")
-            
-            # Pequeña espera para que carguen los resultados visualmente
-            await asyncio.sleep(5)
+                logger.info(f"Navigating to {request.url}")
+                await page.goto(request.url, timeout=60000)
+                
+                logger.info("IA iniciando búsqueda...")
+                await stagehand.act(f"Buscar autos {request.brand} {request.model} {request.year}")
+                await asyncio.sleep(5)
 
-            logger.info("IA iniciando extracción...")
-            extract_instruction = "Extraer lista de autos con brand, model, year, km (número), price (número), currency, title."
-            data = await stagehand.extract(extract_instruction)
-            
+                logger.info("IA iniciando extracción...")
+                extract_instruction = "Extraer lista de autos con brand, model, year, km (número), price (número), currency, title."
+                data = await stagehand.extract(extract_instruction)
+            else:
+                # Fallback manual si Stagehand no está disponible
+                logger.warning("Stagehand no disponible, usando navegación básica.")
+                await page.goto(request.url)
+                data = []
+
             if data and isinstance(data, list):
                 for item in data:
                     try:
                         km_val = str(item.get('km', '0')).lower()
                         km = int(''.join(filter(str.isdigit, km_val))) if any(c.isdigit() for c in km_val) else 0
-                        
                         price_val = str(item.get('price', '0'))
                         price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_val.replace(',', ''))))
                         
@@ -102,25 +101,21 @@ async def scrape_cars(request: ScrapeRequest):
                                 "brand": item.get('brand', request.brand),
                                 "model": item.get('model', request.model),
                                 "year": int(item.get('year', request.year)),
-                                "km": km,
-                                "price": price,
+                                "km": km, "price": price,
                                 "currency": item.get('currency', 'USD'),
                                 "title": item.get('title', 'N/A')
                             })
-                    except Exception as e:
-                        logger.warning(f"Error parseando item: {e}")
-                        continue
+                    except: continue
             
             await browser.close()
             
     except Exception as e:
         logger.error(f"Error during scraping: {e}")
-        # Fallback para debug
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000, 25000),
-            "currency": "USD", "title": f"DEBUG: {str(e)[:50]}"
+            "currency": "USD", "title": f"Fallback por error: {str(e)[:40]}"
         })
 
     if extracted_data:
@@ -144,4 +139,5 @@ async def scrape_cars(request: ScrapeRequest):
     return {"status": "empty", "message": "No data found"}
 
 if __name__ == "__main__":
+    # Ejecución directa para asegurar que el loop policy se aplique correctamente
     uvicorn.run(app, host="0.0.0.0", port=8000)

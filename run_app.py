@@ -6,11 +6,10 @@ import os
 def run_services():
     print("🚀 Iniciando servicios...")
 
-    # Define paths
     backend_dir = "Backend"
     frontend_dir = "Frontend"
     
-    # Detect the correct virtual environment python path
+    # Detectar el ejecutable de python del entorno virtual
     if os.name == 'nt':  # Windows
         venv_python = os.path.join(os.getcwd(), ".venv", "Scripts", "python.exe")
     else:  # Linux / Mac
@@ -20,25 +19,23 @@ def run_services():
         print(f"✅ Usando entorno virtual: {venv_python}")
         python_exec = venv_python
     else:
-        print(f"⚠️ Entorno virtual no detectado en {venv_python}. Usando python del sistema.")
+        print(f"⚠️ Entorno virtual no detectado. Usando python del sistema.")
         python_exec = sys.executable
 
-    # Environment variables
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.path.join(os.getcwd(), "Backend") + os.pathsep + os.getcwd()
+    # PYTHONPATH configurado para que Backend sea un paquete visible
+    env["PYTHONPATH"] = os.path.abspath(backend_dir) + os.pathsep + os.getcwd()
 
-    # Start FastAPI
+    # CAMBIO: Lanzamos main.py directamente en lugar de '-m uvicorn'
     print("🔹 Levantando Backend (FastAPI)...")
     backend_process = subprocess.Popen(
-        [python_exec, "-m", "uvicorn", "main:app", "--reload", "--port", "8000"],
+        [python_exec, "main.py"],
         cwd=backend_dir,
         env=env
     )
 
-    # Give backend a moment to start
     time.sleep(3)
 
-    # Start Streamlit
     print("🔹 Levantando Frontend (Streamlit)...")
     frontend_process = subprocess.Popen(
         [python_exec, "-m", "streamlit", "run", "app.py", "--server.port", "8501"],
@@ -46,7 +43,7 @@ def run_services():
         env=env
     )
 
-    print("✅ Servicios corriendo. Presiona Ctrl+C para detener.")
+    print("✅ Servicios corriendo. Frontend en http://localhost:8501")
 
     try:
         backend_process.wait()
