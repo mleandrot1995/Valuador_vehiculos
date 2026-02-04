@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# Intentamos importar la versión oficial de Stagehand
+# Import oficial de Stagehand (browserbase/stagehand-python)
 try:
     from stagehand import Stagehand
 except ImportError:
@@ -49,20 +49,19 @@ async def scrape_cars(request: ScrapeRequest):
     logger.info(f"🚀 Iniciando Stagehand Oficial para: {request.brand} {request.model}")
     
     if Stagehand is None:
-        raise HTTPException(status_code=500, detail="Librería Stagehand no instalada correctamente.")
+        raise HTTPException(status_code=500, detail="Librería Stagehand no instalada correctamente. Ejecute: pip install git+https://github.com/browserbase/stagehand-python.git")
 
+    # --- CONFIGURACIÓN DE STAGEHAND VIA ENTORNO ---
+    # La versión oficial lee estas variables prioritariamente
+    os.environ["GEMINI_API_KEY"] = request.api_key
+    os.environ["STAGEHAND_MODEL_NAME"] = "gemini-1.5-flash"
+    os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
+    
     extracted_data = []
     
-    # Configuramos la API Key en el entorno
-    os.environ["GEMINI_API_KEY"] = request.api_key
-    
     try:
-        # Usamos el protocolo 'async with' que soporta la versión de GitHub
-        async with Stagehand(
-            env="local", 
-            model_name="gemini-1.5-flash",
-            model_provider="google"
-        ) as stagehand:
+        # Inicialización limpia de Stagehand (sin argumentos conflictivos)
+        async with Stagehand() as stagehand:
             
             logger.info(f"Navegando a {request.url}...")
             await stagehand.goto(request.url)
@@ -83,9 +82,12 @@ async def scrape_cars(request: ScrapeRequest):
             if results and isinstance(results, list):
                 for item in results:
                     try:
-                        # Limpieza y normalización
-                        km = int(str(item.get('km', '0')).replace('.', '').replace(',', '').strip())
-                        price = float(str(item.get('price', '0')).replace('.', '').replace(',', '').strip())
+                        # Limpieza y normalización de datos numéricos
+                        km_str = str(item.get('km', '0'))
+                        km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
+                        
+                        price_str = str(item.get('price', '0'))
+                        price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_str.replace(',', ''))))
                         
                         if km <= request.km_max:
                             extracted_data.append({
@@ -97,11 +99,13 @@ async def scrape_cars(request: ScrapeRequest):
                                 "currency": item.get('currency', 'ARS'),
                                 "title": item.get('title', 'N/A')
                             })
-                    except: continue
+                    except Exception as parse_err:
+                        logger.warning(f"Error parseando item: {parse_err}")
+                        continue
 
     except Exception as e:
         logger.error(f"❌ Error en Stagehand Oficial: {e}")
-        # Fallback de debug
+        # Fallback de debug para el dashboard
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
@@ -126,7 +130,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con Stagehand (GitHub version)"
+            "message": "Scraping completado con Stagehand (Official)"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
