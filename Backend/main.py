@@ -49,10 +49,11 @@ async def scrape_cars(request: ScrapeRequest):
     logger.info(f"🚀 Iniciando Stagehand Oficial para: {request.brand} {request.model}")
     
     if Stagehand is None:
-        raise HTTPException(status_code=500, detail="Librería Stagehand no instalada correctamente. Ejecute: pip install git+https://github.com/browserbase/stagehand-python.git")
+        raise HTTPException(status_code=500, detail="Librería Stagehand no instalada correctamente.")
 
     # --- CONFIGURACIÓN DE STAGEHAND VIA ENTORNO ---
-    # La versión oficial lee estas variables prioritariamente
+    # La versión oficial requiere MODEL_API_KEY para el cliente de IA
+    os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
     os.environ["STAGEHAND_MODEL_NAME"] = "gemini-1.5-flash"
     os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
@@ -60,8 +61,13 @@ async def scrape_cars(request: ScrapeRequest):
     extracted_data = []
     
     try:
-        # Inicialización limpia de Stagehand (sin argumentos conflictivos)
-        async with Stagehand() as stagehand:
+        # Inicialización de Stagehand
+        # Intentamos pasar los parámetros directamente al constructor para evitar ambigüedades
+        async with Stagehand(
+            model_api_key=request.api_key,
+            model_name="gemini-1.5-flash",
+            model_provider="google"
+        ) as stagehand:
             
             logger.info(f"Navegando a {request.url}...")
             await stagehand.goto(request.url)
@@ -130,7 +136,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado con Stagehand (Official)"
+            "message": "Scraping completado con Stagehand"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
