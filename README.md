@@ -17,8 +17,8 @@ Si descargas este repositorio para ejecutarlo en tu máquina local (Windows/Mac/
 
 ### 2. Clonar el repositorio
 ```bash
-git clone <URL_DE_TU_REPO>
-cd <NOMBRE_DEL_REPO>
+git clone https://github.com/mleandrot1995/Valuador_vehiculos.git
+cd Valuador_vehiculos
 ```
 
 ### 3. Configurar Entorno Virtual
