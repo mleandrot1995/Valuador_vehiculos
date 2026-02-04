@@ -5,49 +5,57 @@
   channel = "stable-24.05"; # or "unstable"
   # Use https://search.nixos.org/packages to find packages
   packages = [
-    # pkgs.go
-    # pkgs.python311
-    # pkgs.python311Packages.pip
-    # pkgs.nodejs_20
-    # pkgs.nodePackages.nodemon
+    pkgs.python311
+    pkgs.python311Packages.pip
+    pkgs.playwright-driver # Helps with playwright dependencies
   ];
   # Sets environment variables in the workspace
-  env = {};
+  env = {
+    PLAYWRIGHT_BROWSERS_PATH = "$HOME/playwright-browsers";
+  };
   idx = {
     # Search for the extensions you want on https://open-vsx.org/ and use "publisher.id"
     extensions = [
-      # "vscodevim.vim"
+      "ms-python.python"
       "google.gemini-cli-vscode-ide-companion"
     ];
     # Enable previews
     previews = {
       enable = true;
       previews = {
-        # web = {
-        #   # Example: run "npm run dev" with PORT set to IDX's defined port for previews,
-        #   # and show it in IDX's web preview panel
-        #   command = ["npm" "run" "dev"];
-        #   manager = "web";
-        #   env = {
-        #     # Environment variables to set for your server
-        #     PORT = "$PORT";
-        #   };
-        # };
+        web = {
+          command = ["streamlit" "run" "Frontend/app.py" "--server.port" "$PORT" "--server.headless" "true"];
+          manager = "web";
+        };
       };
     };
     # Workspace lifecycle hooks
     workspace = {
       # Runs when a workspace is first created
       onCreate = {
-        # Example: install JS dependencies from NPM
-        # npm-install = "npm install";
-        # Open editors for the following files by default, if they exist:
-        default.openFiles = [ ".idx/dev.nix" "README.md" ];
+        setup-envs = ''
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install -r Backend/requirements.txt
+          pip install -r Frontend/requirements.txt
+          playwright install chromium
+        '';
+        default.openFiles = [ "README.md" "Frontend/app.py" "Backend/main.py" ];
       };
       # Runs when the workspace is (re)started
       onStart = {
-        # Example: start a background task to watch and re-build backend code
-        # watch-backend = "npm run watch-backend";
+        # We can't easily run two blocking processes in onStart for the preview, 
+        # but the user has a run_app.py script.
+        # We'll set up the environment so they can just run it.
+        # Alternatively, we could start the backend in background.
+        start-backend = ''
+          source .venv/bin/activate
+          # Run backend in background for the preview to work with it? 
+          # Or just let the user run run_app.py. 
+          # The preview command above only runs streamlit.
+          # Let's try to make the preview command run both or just rely on manual run.
+          # For now, just ensure venv is activated in terminals if possible, but nix shell handles paths.
+        '';
       };
     };
   };

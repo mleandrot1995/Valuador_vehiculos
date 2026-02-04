@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment Variables (CRITICAL)
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Streamlit
+.streamlit/
+!.streamlit/config.toml # Keep config if generic, ignore if contains secrets
+
+# Playwright
+/playwright-browsers/
+test-results/
+
+# Project Data
+# Ignore generated json data but keep the folder structure
+Backend/data/*.json
+!Backend/data/.gitkeep
+
+# System
+Thumbs.db
