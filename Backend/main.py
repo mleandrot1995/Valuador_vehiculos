@@ -48,73 +48,112 @@ async def scrape_cars(request: ScrapeRequest):
     if AsyncStagehand is None:
         raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
 
-    # Asegurar API Keys en el entorno
+    # Asegurar API Keys y bypass para el motor local en Windows
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
+    os.environ["STAGEHAND_MODEL_PROVIDER"] = "google"
+    os.environ["BROWSERBASE_API_KEY"] = "local-bypass"
+    os.environ["BROWSERBASE_PROJECT_ID"] = "local-bypass"
     
     extracted_data = []
+    client = None
     
     try:
-        # Al usar AsyncStagehand como Context Manager asíncrono, la librería
-        # maneja la sesión localmente sin intentar validarla en la nube de Browserbase.
-        async with AsyncStagehand(
+        # 1. Instanciar el cliente
+        client = AsyncStagehand(
             model_api_key=request.api_key,
+            browserbase_api_key="local-bypass",
+            browserbase_project_id="local-bypass",
             server="local",
             local_headless=False
-        ) as stagehand:
+        )
 
-            logger.info(f"Navegando a {request.url}...")
-            # Los métodos de navegación están disponibles directamente en el objeto stagehand
-            await stagehand.navigate(request.url)
-            
-            logger.info("IA buscando el vehículo...")
-            # act() utiliza el LLM para interactuar con la página
-            await stagehand.act(f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}")
-            
-            # Tiempo de espera para que la página cargue los resultados
-            await asyncio.sleep(7) 
+        # 2. Iniciar sesión con cabeceras requeridas para evitar el error 400/401
+        logger.info("Iniciando sesión en Stagehand...")
+        session = await client.sessions.start(
+            model_name="gemini-1.5-flash",
+            extra_headers={
+                "X-Browserbase-API-Key": "local-bypass",
+                "X-Browserbase-Project-Id": "local-bypass"
+            }
+        )
+        
+        session_id = session.id
+        logger.info(f"✅ Sesión iniciada con ID: {session_id}")
+        
+        # 3. Navegar (La firma requiere 'id' como primer argumento)
+        logger.info(f"Navegando a {request.url}...")
+        await client.sessions.navigate(session_id, url=request.url)
+        
+        # 4. Actuar (La firma requiere 'id' y 'input')
+        logger.info("IA ejecutando búsqueda...")
+        await client.sessions.act(
+            session_id, 
+            input=f"Buscar autos marca {request.brand}, modelo {request.model}, año {request.year}"
+        )
+        
+        # Pausa para estabilización tras la búsqueda
+        await asyncio.sleep(7) 
 
-            logger.info("IA extrayendo datos estructurados...")
-            # extract() utiliza el LLM para obtener JSON de lo que ve en pantalla
-            results = await stagehand.extract(
-                "Lista de autos con: brand, model, year (number), km (number), price (number), currency, title"
-            )
-            
-            if results and isinstance(results, list):
-                for item in results:
-                    try:
-                        km_str = str(item.get('km', '0'))
-                        km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
-                        
-                        price_str = str(item.get('price', '0'))
-                        price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_str.replace(',', ''))))
-                        
-                        if km <= request.km_max:
-                            extracted_data.append({
-                                "brand": item.get('brand', request.brand),
-                                "model": item.get('model', request.model),
-                                "year": int(item.get('year', request.year)),
-                                "km": km,
-                                "price": price,
-                                "currency": item.get('currency', 'ARS'),
-                                "title": item.get('title', 'N/A')
-                            })
-                    except Exception as e:
-                        logger.warning(f"Error procesando item: {e}")
-                        continue
-            else:
-                logger.warning("No se recibieron resultados válidos de Stagehand.")
+        # 5. Extraer (La firma requiere 'id' e 'instruction')
+        logger.info("IA extrayendo datos estructurados...")
+        extract_response = await client.sessions.extract(
+            session_id,
+            instruction="Lista de autos con: brand, model, year (number), km (number), price (number), currency, title"
+        )
+        
+        # Procesar la respuesta de extracción
+        # La estructura depende del objeto de respuesta del SDK (AsyncSessionExtractResponse)
+        results = []
+        if hasattr(extract_response, 'output'):
+            results = extract_response.output
+        elif hasattr(extract_response, 'data'):
+            results = extract_response.data
+        elif isinstance(extract_response, dict):
+            results = extract_response.get('output', [])
+
+        if results and isinstance(results, list):
+            for item in results:
+                try:
+                    km_str = str(item.get('km', '0'))
+                    km = int(''.join(filter(str.isdigit, km_str))) if any(c.isdigit() for c in km_str) else 0
+                    
+                    price_str = str(item.get('price', '0'))
+                    price = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_raw.replace(',', ''))))
+                    
+                    if km <= request.km_max:
+                        extracted_data.append({
+                            "brand": item.get('brand', request.brand),
+                            "model": item.get('model', request.model),
+                            "year": int(item.get('year', request.year)),
+                            "km": km,
+                            "price": price,
+                            "currency": item.get('currency', 'ARS'),
+                            "title": item.get('title', 'N/A')
+                        })
+                except Exception as e:
+                    logger.warning(f"Error parseando item: {e}")
+                    continue
+        
+        # 6. Finalizar sesión
+        await client.sessions.end(session_id)
 
     except Exception as e:
         logger.error(f"❌ Error en el flujo de Stagehand: {e}")
+        # Fallback de debug
         import random
         extracted_data.append({
             "brand": request.brand, "model": request.model, "year": request.year,
             "km": random.randint(1000, request.km_max), "price": random.randint(15000000, 30000000),
             "currency": "ARS", "title": f"Detección Fallida (Error: {str(e)[:40]})"
         })
+    
+    finally:
+        # Cerrar el cliente
+        if client:
+            await client.close()
 
-    # Guardado de resultados
+    # Guardado de resultados en JSON
     if extracted_data:
         df = pd.DataFrame(extracted_data)
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -131,7 +170,7 @@ async def scrape_cars(request: ScrapeRequest):
             "status": "success",
             "data": extracted_data,
             "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Scraping completado exitosamente con Stagehand Local"
+            "message": "Scraping completado con arquitectura de IDs y Bypass"
         }
     
     return {"status": "empty", "message": "No se encontraron datos"}
