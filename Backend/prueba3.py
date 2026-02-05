@@ -1,77 +1,126 @@
-import asyncio
+#!/usr/bin/env python3
 import os
-import time
+import sys
 from stagehand import Stagehand
 
-# --- CONFIGURACIÓN DE ENTORNO ---
-# Seteamos las llaves antes de cualquier otra cosa.
-# El proxy local las necesita para dejarte pasar.
-os.environ["BROWSERBASE_API_KEY"] = "local"
-os.environ["BROWSERBASE_PROJECT_ID"] = "local"
+# Usamos GEMINI_API_KEY o MODEL_API_KEY
+#api_key = model_name = os.environ.get("MODEL_API_KEY")
+model_name = os.environ.get("STAGEHAND_MODEL", "ollama/llama3.1:8b")
+#model_name = os.environ.get("STAGEHAND_MODEL", "ollama/llama3")
 
-async def main():
-    # --- CONFIGURACIÓN OLLAMA ---
-    # Usamos gpt-4o como máscara (alias)
-    MODEL_NAME = "gpt-4o" 
-    OLLAMA_URL = "http://localhost:11434/v1"
+try:
+    client = Stagehand(
+        server="local",
+        #model_api_key=api_key,
+        local_headless=False, # Esto asegura que veas la ventana
+        local_ready_timeout_s=15.0,
+        timeout=300.0
+    )
+
+    print("🔧 Iniciando sesión...")
+    session = client.sessions.start(
+        model_name=model_name, # Usa este nombre que es más estable en el SEA
+        browser={
+            "type": "local",
+            "launchOptions": {},
+        },
+    )
+    session_id = session.data.session_id
+    print(f"✅ Sesión iniciada: {session_id}")
+
+    # CORRECCIÓN DE URL
+    target_url = "https://www.kavak.com" 
+    print(f"\n📍 Navegando a {target_url}...")
+    client.sessions.navigate(id=session_id, url=target_url)
     
-    ollama_config = {
-        "model": {
-            "model_name": MODEL_NAME,
-            "provider": "openai",
-            "base_url": OLLAMA_URL
-        }
-    }
+    # Pausa real para que el sitio termine de cargar scripts internos
+    import time
+    time.sleep(2) 
+    
+    print("ejecuto prueba...")
+    #response = client.sessions.act(
+    #    id=session_id,
+    #    input="ir a autos usados, en donde se tiene que ver todo el marketplace de autos usados " \
+    #    "y no accesorios de autos, verificar que se ingreso correctamente"
+    #    )
+    #print(response.data)
 
-    # Inicialización limpia. Si el pip install -U funcionó, 
-    # Stagehand() tomará las variables de entorno automáticamente.
-    print(f"🚀 Iniciando Stagehand...")
-    client = Stagehand() 
-
-    try:
-        print(f"🔧 Solicitando sesión al servidor local (Proxy: {MODEL_NAME})...")
-        
-        # Iniciamos la sesión
-        start_response = client.sessions.start(
-            model_name=MODEL_NAME,
-            browser={
-                "type": "local",
-                "launchOptions": {"headless": False},
-            },
-        )
-        session_id = start_response.data.session_id
-        print(f"✅ Conexión establecida. ID: {session_id}")
-
-        # Navegación
-        target_url = "https://www.kavak.com/ar"
-        print(f"📍 Navegando a {target_url}...")
-        client.sessions.navigate(id=session_id, url=target_url)
-        
-        # Pausa para que el JS de Kavak termine de cargar
-        await asyncio.sleep(5)
-
-        # Ejecución con Ollama
-        print("🤖 Consultando a Ollama para entrar al marketplace...")
-        execute_response = client.sessions.execute(
+    response = client.sessions.execute(
             id=session_id,
             execute_options={
-                "instruction": "Haz clic en el botón para ver todos los autos usados.",
-                "max_steps": 5
+                "instruction": "Quiero ingreses a www.mercadolibre.com.ar",
+                "max_steps": 20,
             },
-            agent_config=ollama_config
+            agent_config={
+                #"model": {"model_name":"ollama/llama3.1:8b"},
+                #"model": {"model_name":"ollama/llama3"},
+            },
         )
-        print(f"IA dice: {execute_response.data.message}")
+    print(response.data)
 
-    except Exception as e:
-        print(f"❌ Error en el flujo: {e}")
-    finally:
-        if 'session_id' in locals():
-            try:
-                client.sessions.end(id=session_id)
-            except:
-                pass
+
+
+    #print("🖱️ Interactuando con la página...")
+    #try:
+    #    # CAMBIO CLAVE: Se usa 'input' en lugar de 'instruction' para .execute()
+    #    client.sessions.act(
+    #        id=session_id,
+    #        input="Acepta las cookies si aparece el cartel"
+    #    )
+#
+    #    time.sleep(2) # Esperamos a que la acción se ejecute
+    #except Exception as e:
+    #    print(f"⚠️ Nota en act: {e}")
+#
+    #print("🔍 Intentando filtrado...")
+    #try:
+    #    # Para .extract() el argumento SI suele ser 'instruction'
+    #    print("🔍 Filtrando por marca...")
+    #    result = client.sessions.act(
+    #        id=session_id,
+    #        input="Realizar el filtrado de la busqueda utilizando los filtros correspondientes de marca (puede estar como lista desplegable)" \
+    #        " y seleccionar o completar con 'Renault', verificar que la selección haya sido aplicada correctamente" 
+    #    )
+#
+#
+    #    print("🔍 Filtrando por modelo...")
+    #    result = client.sessions.act(
+    #        id=session_id,
+    #        input="Realizar el filtrado de la busqueda utilizando los filtros correspondientes de marca (puede estar como lista desplegable)" \
+    #        "y seleccionar o completar con 'Sandero', verificar que la selección haya sido aplicada correctamente" 
+    #    )
+    #    print("🔍 ejecutar busqueda...")
+    #    result = client.sessions.act(
+    #        id=session_id,
+    #        input="Verificar si es necesario pulsar algún botón para ejecutar la búsqueda " \
+    #        "y pulsarlo si es así. En caso contrario omitir este paso" 
+    #    )
+    #except Exception as e:
+    #    print(f"❌ Error en act: {e}")
+#
+    #print("🔍 Intentando extracción...")
+    #try:
+    #    # Para .extract() el argumento SI suele ser 'instruction'
+    #    result = client.sessions.extract(
+    #        id=session_id,
+    #        instruction="extraer los encabezados de las publicaciones de autos " \
+    #"junto con su url o link, y datos relevantes en un " \
+    #"json, como marca, modelo, año, trasmisión, combustible,precio"
+    #    )
+    #except Exception as e:
+    #    print(f"❌ Error en extracción: {e}")
+    #
+    #print("-" * 30)
+    #print(f"📄 DATOS EXTRAÍDOS:\n{result.data.result}")
+    #print("-" * 30)
+
+except Exception as e:
+    print(f"\n❌ Error: {e}")
+    import traceback
+    traceback.print_exc()
+finally:
+    if 'session_id' in locals():
+        client.sessions.end(id=session_id)
+    if 'client' in locals():
         client.close()
-        print("\n🔌 Proceso finalizado.")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    print("\n🔌 Proceso finalizado.")
