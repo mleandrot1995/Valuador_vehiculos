@@ -80,15 +80,18 @@ async def scrape_cars(request: ScrapeRequest):
             # 2. MANEJO DE BLOQUEOS (Cookies/País)
             print("🛡️ Paso 2: Limpiando obstáculos visuales...")
             try:
-                client_sync.sessions.act(id=sess_id, input="Si aparece un cartel de selección de país o cookies, acéptalo o ciérralo inmediatamente.")
-                time.sleep(2)
+                client_sync.sessions.act(
+                    id=sess_id, 
+                    input="Acepta las cookies y selecciona 'Argentina' si aparece el selector de país. Cierra cualquier popup publicitario."
+                )
+                time.sleep(3)
             except: pass
 
             # 3. FILTRO DE MARCA
             print(f"🔍 Paso 3: Filtrando Marca -> {request.brand}")
             client_sync.sessions.act(
                 id=sess_id, 
-                input=f"Busca el filtro de 'Marca' en la barra lateral o menús, haz clic en '{request.brand}'. Si no está visible, despliega la lista de marcas primero."
+                input=f"Realizar el filtrado utilizando el filtro de marca y seleccionar o completar con '{request.brand}', verificar que la selección haya sido aplicada correctamente."
             )
             time.sleep(5) 
 
@@ -96,47 +99,40 @@ async def scrape_cars(request: ScrapeRequest):
             print(f"🔍 Paso 4: Filtrando Modelo -> {request.model}")
             client_sync.sessions.act(
                 id=sess_id, 
-                input=f"Busca el filtro de 'Modelo', selecciona exactamente '{request.model}'. Asegúrate de que el checkbox o la opción quede marcada. Si hay un botón de 'Ver más' para modelos, úsalo."
+                input=f"Realizar el filtrado utilizando el filtro de modelo y seleccionar o completar con '{request.model}', verificar que la selección haya sido aplicada correctamente."
             )
             time.sleep(5)
 
             # 5. FILTRO DE AÑO
             print(f"🔍 Paso 5: Filtrando Año -> {request.year}")
-            client_sync.sessions.act(
-                id=sess_id, 
-                input=f"Busca el filtro de 'Año' o 'Modelo' (referido al año). Selecciona el año '{request.year}' o el rango que lo incluya específicamente."
-            )
-            time.sleep(5)
-
-            # 6. CARGA DE CONTENIDO (Scroll) - CORRECCIÓN DE ARGUMENTOS
-            print("📜 Paso 6: Cargando tarjetas de autos...")
+            # Usamos execute para mayor razonamiento en el filtro de año que suele ser un slider o lista compleja
             client_sync.sessions.execute(
                 id=sess_id,
                 execute_options={
-                    "instruction": "Realiza scroll hacia abajo de forma pausada para asegurar que las tarjetas de autos carguen sus precios y títulos. Hazlo 3 veces.",
-                    "max_steps": 5,
+                    "instruction": f"Busca el filtro de 'Año'. Selecciona exactamente el año {request.year}. "
+                                   f"Si es un rango, ajusta ambos extremos a {request.year} o selecciona la casilla de {request.year}. "
+                                   f"Verifica que el filtro de año se haya aplicado y la página se actualice.",
+                    "max_steps": 10,
                 },
-                agent_config={
-                    "model": {"model_name": model_name},
-                },
+                agent_config={"model": {"model_name": model_name}},
             )
-            time.sleep(4)
+            time.sleep(5)
+
+            # 6. CARGA DE CONTENIDO (Scroll)
+            print("📜 Paso 6: Cargando tarjetas de autos...")
+            client_sync.sessions.act(
+                id=sess_id,
+                input="Realiza un scroll descendente lento hasta ver al menos 10 publicaciones o llegar al final, para que carguen los precios."
+            )
+            time.sleep(5)
 
             # 7. EXTRACCIÓN FINAL
             print("💎 Paso 7: Extrayendo datos estructurados...")
             result = client_sync.sessions.extract(
                 id=sess_id,
                 instruction=f"""
-                Extrae la lista de todos los autos visibles que coincidan con la marca {request.brand} y modelo {request.model}.
-                Devuelve un JSON con una lista llamada 'autos' donde cada objeto tenga:
-                - marca (brand)
-                - modelo (model)
-                - año (year, número entero)
-                - km (número entero)
-                - precio (número entero)
-                - moneda (ARS o USD)
-                - titulo (title)
-                - link (url completa de la publicación)
+                extraer los encabezados de las publicaciones de autos que sean de la marca {request.brand}, modelo {request.model} y año {request.year} 
+                junto con su url o link, y datos relevantes en un json, como marca, modelo, año, trasmisión, combustible, precio, moneda.
                 """
             )
             
@@ -145,7 +141,7 @@ async def scrape_cars(request: ScrapeRequest):
             client_sync.close()
             return extracted_raw
 
-        # Ejecución en hilo separado para no bloquear FastAPI
+        # Ejecución en hilo separado
         raw_results = await asyncio.to_thread(run_stagehand_logic)
         
         # PROCESAMIENTO DE RESULTADOS
@@ -161,7 +157,6 @@ async def scrape_cars(request: ScrapeRequest):
             else:
                 items = raw_results
 
-            # Normalizar a lista de diccionarios
             if isinstance(items, dict):
                 for key in ['autos', 'vehiculos', 'cars', 'data', 'items', 'result']:
                     if key in items and isinstance(items[key], list):
