@@ -47,7 +47,6 @@ async def scrape_cars(request: ScrapeRequest):
     if Stagehand is None:
         raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
 
-    # Aseguramos que las variables de entorno estén para el SEA
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
     model_name = "google/gemini-2.0-flash" 
@@ -91,7 +90,7 @@ async def scrape_cars(request: ScrapeRequest):
             print(f"🔍 Paso 3: Filtrando Marca -> {request.brand}")
             client_sync.sessions.act(
                 id=sess_id, 
-                input=f"Realizar el filtrado utilizando el filtro de marca y seleccionar o completar con '{request.brand}', verificar que la selección haya sido aplicada correctamente."
+                input=f"Selecciona el filtro de marca '{request.brand}'. Si no lo ves, búscalo en la lista desplegable de marcas."
             )
             time.sleep(5) 
 
@@ -99,44 +98,64 @@ async def scrape_cars(request: ScrapeRequest):
             print(f"🔍 Paso 4: Filtrando Modelo -> {request.model}")
             client_sync.sessions.act(
                 id=sess_id, 
-                input=f"Realizar el filtrado utilizando el filtro de modelo y seleccionar o completar con '{request.model}', verificar que la selección haya sido aplicada correctamente."
+                input=f"Selecciona el filtro de modelo '{request.model}'. Asegúrate de que se aplique correctamente."
             )
             time.sleep(5)
 
             # 5. FILTRO DE AÑO
             print(f"🔍 Paso 5: Filtrando Año -> {request.year}")
-            # Usamos execute para mayor razonamiento en el filtro de año que suele ser un slider o lista compleja
             client_sync.sessions.execute(
                 id=sess_id,
                 execute_options={
-                    "instruction": f"Busca el filtro de 'Año'. Selecciona exactamente el año {request.year}. "
-                                   f"Si es un rango, ajusta ambos extremos a {request.year} o selecciona la casilla de {request.year}. "
-                                   f"Verifica que el filtro de año se haya aplicado y la página se actualice.",
+                    "instruction": f"Busca el filtro de 'Año' y selecciona el año {request.year}. Verifica que la lista de autos se actualice.",
                     "max_steps": 10,
                 },
                 agent_config={"model": {"model_name": model_name}},
             )
             time.sleep(5)
 
-            # 6. CARGA DE CONTENIDO (Scroll)
+            # 6. CARGA DE CONTENIDO (Scroll progresivo)
             print("📜 Paso 6: Cargando tarjetas de autos...")
-            client_sync.sessions.act(
-                id=sess_id,
-                input="Realiza un scroll descendente lento hasta ver al menos 10 publicaciones o llegar al final, para que carguen los precios."
-            )
-            time.sleep(5)
+            for _ in range(3):
+                client_sync.sessions.act(id=sess_id, input="Haz scroll hacia abajo un poco para cargar más resultados.")
+                time.sleep(2)
+            time.sleep(3)
 
-            # 7. EXTRACCIÓN FINAL
+            # 7. EXTRACCIÓN FINAL CON ESQUEMA EXPLÍCITO
             print("💎 Paso 7: Extrayendo datos estructurados...")
+            # Definimos un esquema para que la IA sepa exactamente qué devolver
+            schema = {
+                "type": "object",
+                "properties": {
+                    "autos": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "marca": {"type": "string"},
+                                "modelo": {"type": "string"},
+                                "año": {"type": "integer"},
+                                "km": {"type": "integer"},
+                                "precio": {"type": "number"},
+                                "moneda": {"type": "string"},
+                                "titulo": {"type": "string"},
+                                "link": {"type": "string"}
+                            },
+                            "required": ["marca", "modelo", "precio"]
+                        }
+                    }
+                }
+            }
+
             result = client_sync.sessions.extract(
                 id=sess_id,
-                instruction=f"""
-                extraer los encabezados de las publicaciones de autos que sean de la marca {request.brand}, modelo {request.model} y año {request.year} 
-                junto con su url o link, y datos relevantes en un json, como marca, modelo, año, trasmisión, combustible, precio, moneda.
-                """
+                instruction=f"Extrae todos los autos listados en la página. Marca: {request.brand}, Modelo: {request.model}, Año: {request.year}.",
+                schema=schema
             )
             
             extracted_raw = result.data.result
+            print(f"Raw extraction result: {extracted_raw}") # Log para depuración
+            
             client_sync.sessions.end(id=sess_id)
             client_sync.close()
             return extracted_raw
@@ -157,36 +176,47 @@ async def scrape_cars(request: ScrapeRequest):
             else:
                 items = raw_results
 
+            # Extraer lista de 'autos' del objeto devuelto
             if isinstance(items, dict):
-                for key in ['autos', 'vehiculos', 'cars', 'data', 'items', 'result']:
-                    if key in items and isinstance(items[key], list):
-                        items = items[key]
-                        break
-                if isinstance(items, dict): items = [items]
+                if 'autos' in items:
+                    items = items['autos']
+                else:
+                    # Intentar buscar cualquier lista
+                    for v in items.values():
+                        if isinstance(v, list):
+                            items = v
+                            break
             
-            if isinstance(items, list):
-                for item in items:
-                    try:
-                        def clean_num(v):
-                            s = "".join(c for c in str(v).replace(',', '.') if c.isdigit() or c == '.')
+            if not isinstance(items, list):
+                if isinstance(items, dict): items = [items]
+                else: items = []
+            
+            for item in items:
+                try:
+                    def clean_num(v):
+                        if v is None: return 0.0
+                        s = "".join(c for c in str(v).replace(',', '.') if c.isdigit() or c == '.')
+                        try:
                             return float(s) if s else 0.0
+                        except:
+                            return 0.0
 
-                        price = clean_num(item.get('precio', item.get('price', 0)))
-                        km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
-                        year = int(clean_num(item.get('año', item.get('year', request.year))))
+                    price = clean_num(item.get('precio', item.get('price', 0)))
+                    km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
+                    year = int(clean_num(item.get('año', item.get('year', request.year))))
 
-                        if price > 0:
-                            extracted_data.append({
-                                "brand": str(item.get('marca', item.get('brand', request.brand))),
-                                "model": str(item.get('modelo', item.get('model', request.model))),
-                                "year": year,
-                                "km": km,
-                                "price": price,
-                                "currency": str(item.get('moneda', item.get('currency', 'ARS'))).upper(),
-                                "title": str(item.get('titulo', item.get('title', 'N/A'))),
-                                "url": str(item.get('link', item.get('url', '')))
-                            })
-                    except: continue
+                    if price > 0:
+                        extracted_data.append({
+                            "brand": str(item.get('marca', item.get('brand', request.brand))),
+                            "model": str(item.get('modelo', item.get('model', request.model))),
+                            "year": year,
+                            "km": km,
+                            "price": price,
+                            "currency": str(item.get('moneda', item.get('currency', 'ARS'))).upper(),
+                            "title": str(item.get('titulo', item.get('title', 'N/A'))),
+                            "url": str(item.get('link', item.get('url', '')))
+                        })
+                except: continue
 
         except Exception as parse_err:
             logger.error(f"Error procesando JSON de IA: {parse_err}")
@@ -197,8 +227,8 @@ async def scrape_cars(request: ScrapeRequest):
     # Persistencia y Respuesta
     if extracted_data:
         df = pd.DataFrame(extracted_data)
-        # Filtro de seguridad post-IA
-        df = df[(df['km'] <= request.km_max) & (df['year'].between(request.year - 1, request.year + 1))]
+        # Filtro de seguridad post-IA (un poco más flexible con el año)
+        df = df[(df['km'] <= request.km_max) & (df['year'].between(request.year - 2, request.year + 2))]
         
         if not df.empty:
             os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -216,7 +246,7 @@ async def scrape_cars(request: ScrapeRequest):
                 "message": f"Se extrajeron {len(df)} vehículos con éxito."
             }
     
-    return {"status": "empty", "message": "No se encontraron datos válidos después del filtrado modular."}
+    return {"status": "empty", "message": "No se encontraron datos válidos. Verifique el log del backend para ver el JSON crudo devuelto por la IA."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
