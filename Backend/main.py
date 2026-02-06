@@ -42,7 +42,7 @@ class ScrapeRequest(BaseModel):
 
 @app.post("/scrape")
 async def scrape_cars(request: ScrapeRequest):
-    logger.info(f"🚀 Iniciando Extracción Robusta para: {request.brand} {request.model}")
+    logger.info(f"🚀 Iniciando Scraping Robusto: {request.brand} {request.model}")
     
     if Stagehand is None:
         raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
@@ -60,55 +60,62 @@ async def scrape_cars(request: ScrapeRequest):
                 server="local",
                 model_api_key=request.api_key,
                 local_headless=False,
-                local_ready_timeout_s=25.0,
+                local_ready_timeout_s=30.0,
             )
             
-            print("🔧 Iniciando sesión...")
             session = client_sync.sessions.start(
                 model_name=model_name,
                 browser={"type": "local", "launchOptions": {}},
             )
             sess_id = session.data.session_id
             
-            print(f"📍 Navegando a {request.url}...")
-            client_sync.sessions.navigate(id=sess_id, url=request.url)
+            # Navegación Determinista: Intentamos ir directo a Argentina si es Kavak
+            start_url = request.url
+            if "kavak.com" in start_url and "/ar" not in start_url:
+                start_url = "https://www.kavak.com/ar/compra-de-autos"
+            
+            print(f"📍 Navegando a {start_url}...")
+            client_sync.sessions.navigate(id=sess_id, url=start_url)
             time.sleep(5)
             
-            # FLUJO DE NAVEGACIÓN Y FILTRADO
-            print("🤖 Aplicando filtros y cargando contenido...")
+            # FLUJO DE NAVEGACIÓN BLINDADO
+            print("🤖 Ejecutando secuencia de comandos del agente...")
             client_sync.sessions.execute(
                 id=sess_id,
                 execute_options={
                     "instruction": f"""
-                    1. Si aparece un selector de país, selecciona 'Argentina'.
-                    2. Ve al catálogo de autos usados.
-                    3. Aplica el filtro de Marca '{request.brand}' y el filtro de Modelo '{request.model}'.
-                    4. Verifica que aparezcan resultados en pantalla.
-                    5. Realiza un scroll suave hacia abajo para asegurar que todas las tarjetas de autos carguen sus datos y precios.
+                    OBJETIVO: Filtrar y preparar la vista para extracción.
+                    PASOS:
+                    1. Si aparece un cartel de cookies o país, selecciona 'Argentina' y acepta.
+                    2. Localiza el filtro de 'Marca'. Seleccióna '{request.brand}'. 
+                       Espera 3 segundos a que la página se refresque.
+                    3. Localiza el filtro de 'Modelo'. Busca y selecciona '{request.model}'.
+                       IMPORTANTE: Si el modelo no aparece, busca un botón 'Ver más' en la lista de modelos.
+                    4. Una vez aplicados los filtros, verifica que el contador de resultados sea mayor a 0.
+                    5. Realiza un scroll hasta el final de los resultados visibles para que carguen todos los precios y links.
+                    6. QUÉDATE EN LA VISTA DE RESULTADOS. No entres en ninguna publicación individual.
                     """,
-                    "max_steps": 15,
+                    "max_steps": 25,
                 },
                 agent_config={"model": {"model_name": model_name}},
             )
             
-            # Pausa de renderizado tras el scroll
-            time.sleep(4)
+            # Pausa táctica post-navegación
+            time.sleep(6)
             
-            print("🔍 Ejecutando extracción de datos visibles...")
-            # Instrucción simplificada para maximizar acierto de la IA
+            print("🔍 Extrayendo datos estructurados...")
             result = client_sync.sessions.extract(
                 id=sess_id,
                 instruction="""
-                Extrae la lista de vehículos que se muestran en el catálogo. 
-                Para cada vehículo necesito: 
-                - marca
-                - modelo
-                - año (solo el número)
-                - kilometraje (solo el número)
-                - precio (valor numérico)
-                - moneda (ARS o USD)
-                - titulo_publicacion
-                - link_directo
+                Extrae CADA vehículo de la lista actual. Devuelve un JSON con:
+                - brand: la marca (ej: Toyota)
+                - model: el modelo (ej: Corolla)
+                - year: el año (número entero)
+                - km: kilometraje (número entero, limpia 'km' o puntos)
+                - price: precio (valor numérico, limpia '$' y puntos)
+                - currency: ARS o USD
+                - title: el título que aparece en la tarjeta
+                - link: el URL que lleva a la publicación
                 """
             )
             
@@ -119,7 +126,7 @@ async def scrape_cars(request: ScrapeRequest):
 
         raw_results = await asyncio.to_thread(run_stagehand_logic)
         
-        # PROCESAMIENTO INTELIGENTE DEL JSON
+        # PROCESAMIENTO DE DATOS CON DOBLE VALIDACIÓN
         try:
             items = []
             if isinstance(raw_results, str):
@@ -132,76 +139,69 @@ async def scrape_cars(request: ScrapeRequest):
             else:
                 items = raw_results
 
-            # Normalizar a lista
+            # Normalización a lista de diccionarios
             if isinstance(items, dict):
-                # Buscar listas dentro del diccionario (llaves comunes de LLMs)
-                possible_keys = ['autos', 'vehiculos', 'cars', 'results', 'data', 'items']
-                found = False
-                for key in possible_keys:
+                for key in ['autos', 'cars', 'results', 'data', 'items', 'result']:
                     if key in items and isinstance(items[key], list):
                         items = items[key]
-                        found = True
                         break
-                if not found: items = [items]
+                if isinstance(items, dict): items = [items]
             
             if isinstance(items, list):
                 for item in items:
                     try:
-                        # Mapeo flexible de llaves (Español/Inglés)
-                        brand_val = item.get('marca', item.get('brand', request.brand))
-                        model_val = item.get('modelo', item.get('model', request.model))
-                        year_val = item.get('año', item.get('year', request.year))
-                        
-                        # Limpieza de KM
-                        km_raw = str(item.get('kilometraje', item.get('km', '0'))).lower()
-                        km_val = int(''.join(filter(str.isdigit, km_raw))) if any(c.isdigit() for c in km_raw) else 0
-                        
-                        # Limpieza de PRECIO
-                        price_raw = str(item.get('precio', item.get('price', '0')))
-                        price_val = float(''.join(filter(lambda x: x.isdigit() or x == '.', price_raw.replace(',', ''))))
-                        
-                        if price_val > 0: # Validar que al menos trajo un precio
+                        # Limpieza profunda de datos para Pandas
+                        def clean_num(v):
+                            s = ''.join(filter(lambda x: x.isdigit() or x == '.', str(v).replace(',', '.')))
+                            return float(s) if s else 0.0
+
+                        price = clean_num(item.get('price', item.get('precio', 0)))
+                        km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
+                        year = int(clean_num(item.get('year', item.get('año', request.year))))
+
+                        if price > 0: # Solo guardamos si hay precio válido
                             extracted_data.append({
-                                "brand": brand_val,
-                                "model": model_val,
-                                "year": int(year_val),
-                                "km": km_val,
-                                "price": price_val,
-                                "currency": item.get('moneda', item.get('currency', 'ARS')),
-                                "title": item.get('titulo_publicacion', item.get('title', 'N/A')),
-                                "url": item.get('link_directo', item.get('url', ''))
+                                "brand": item.get('brand', item.get('marca', request.brand)),
+                                "model": item.get('model', item.get('modelo', request.model)),
+                                "year": year,
+                                "km": km,
+                                "price": price,
+                                "currency": item.get('currency', item.get('moneda', 'ARS')),
+                                "title": item.get('title', item.get('titulo', 'N/A')),
+                                "url": item.get('link', item.get('url', ''))
                             })
                     except: continue
 
         except Exception as parse_err:
-            logger.error(f"Error procesando JSON: {parse_err}")
+            logger.error(f"Error procesando JSON de IA: {parse_err}")
 
     except Exception as e:
         logger.error(f"❌ Error en Stagehand: {e}")
-        # Mantenemos un dummy solo si falló todo para no romper el front
-        if not extracted_data:
-            extracted_data.append({"brand": request.brand, "model": request.model, "year": request.year, "km": 0, "price": 0, "currency": "N/A", "title": "Error de detección visual", "url": ""})
 
-    # Persistencia y Respuesta
-    if extracted_data and extracted_data[0]['price'] > 0:
+    # Persistencia y Respuesta Final
+    if extracted_data:
         df = pd.DataFrame(extracted_data)
+        # Filtrado adicional por el año y KM solicitado por el usuario (en caso de que la IA trajera extras)
+        df = df[df['km'] <= request.km_max]
+        
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+        # Mezclar con datos históricos
         all_data = []
         if os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r") as f: all_data = json.load(f)
             except: pass
-        all_data.extend(extracted_data)
+        all_data.extend(df.to_dict('records'))
         with open(DATA_FILE, "w") as f: json.dump(all_data, f, indent=4)
         
-        avg_price = df[df['price']>0]['price'].mean()
         return {
-            "status": "success", "data": extracted_data,
-            "stats": {"average_price": avg_price, "count": len(extracted_data)},
-            "message": "Datos extraídos correctamente."
+            "status": "success", 
+            "data": df.to_dict('records'),
+            "stats": {"average_price": df['price'].mean(), "count": len(df)},
+            "message": f"Se extrajeron {len(df)} vehículos correctamente."
         }
     
-    return {"status": "empty", "message": "La IA navegó correctamente pero no pudo leer los datos de las tarjetas de autos."}
+    return {"status": "empty", "message": "La navegación fue exitosa pero la IA no logró capturar datos válidos. Intente con una búsqueda más específica."}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
