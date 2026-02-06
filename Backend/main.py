@@ -49,7 +49,7 @@ async def scrape_cars(request: ScrapeRequest):
 
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
-    model_name = "google/gemini-2.0-flash" 
+    model_name = "google/gemini-3.0-flash" 
     
     extracted_data = []
     
