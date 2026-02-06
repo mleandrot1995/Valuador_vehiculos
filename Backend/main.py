@@ -55,7 +55,6 @@ async def scrape_cars(request: ScrapeRequest):
     
     try:
         def run_stagehand_logic():
-            # Optimizamos tiempos de espera iniciales
             client_sync = Stagehand(
                 server="local",
                 model_api_key=request.api_key,
@@ -69,12 +68,12 @@ async def scrape_cars(request: ScrapeRequest):
             )
             sess_id = session.data.session_id
             
-            # 1. NAVEGACIÓN DIRECTA (Elimina saltos intermedios)
-            start_url = "https://www.kavak.com/ar/compra-de-autos"
+            # 1. NAVEGACIÓN DIRECTA
+            # Guardamos la URL base para reconstruir links si es necesario
+            base_url = "https://www.kavak.com"
+            start_url = f"{base_url}/ar/compra-de-autos"
             client_sync.sessions.navigate(id=sess_id, url=start_url)
             
-            # OPTIMIZACIÓN 1: Consolidación de Acciones en un solo bloque execute
-            # Reducimos 3 llamadas a la IA a solo 1 llamada compleja.
             print("🤖 Agente ejecutando orquestación de filtros...")
             client_sync.sessions.execute(
                 id=sess_id,
@@ -90,10 +89,9 @@ async def scrape_cars(request: ScrapeRequest):
                 agent_config={"model": {"model_name": model_name}},
             )
             
-            # OPTIMIZACIÓN 2: Reemplazo de time.sleep por espera mínima necesaria
             time.sleep(3) 
 
-            print("💎 Extrayendo datos estructurados...")
+            print("💎 Extrayendo datos estructurados con URLs completas...")
             schema = {
                 "type": "object",
                 "properties": {
@@ -111,16 +109,16 @@ async def scrape_cars(request: ScrapeRequest):
                                 "titulo": {"type": "string"},
                                 "link": {"type": "string"}
                             },
-                            "required": ["precio", "titulo"]
+                            "required": ["precio", "titulo", "link"]
                         }
                     }
                 }
             }
 
-            # La extracción sigue siendo IA para robustez, pero con esquema forzado para velocidad de parseo
+            # Instrucción reforzada para pedir URLs absolutas
             result = client_sync.sessions.extract(
                 id=sess_id,
-                instruction=f"Lista todos los autos {request.brand} {request.model} {request.year} visibles.",
+                instruction=f"Lista todos los autos {request.brand} {request.model} {request.year} visibles. Asegúrate de que el 'link' sea la URL COMPLETA y ABSOLUTA (incluyendo https://www.kavak.com).",
                 schema=schema
             )
             
@@ -131,7 +129,7 @@ async def scrape_cars(request: ScrapeRequest):
 
         raw_results = await asyncio.to_thread(run_stagehand_logic)
         
-        # PROCESAMIENTO RÁPIDO
+        # PROCESAMIENTO
         try:
             items = []
             if isinstance(raw_results, str):
@@ -154,6 +152,13 @@ async def scrape_cars(request: ScrapeRequest):
                         km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
                         year = int(clean_num(item.get('año', item.get('year', request.year))))
 
+                        # RECONSTRUCCIÓN DE URL SI ES RELATIVA
+                        raw_link = str(item.get('link', item.get('url', '')))
+                        if raw_link.startswith('/'):
+                            full_link = f"https://www.kavak.com{raw_link}"
+                        else:
+                            full_link = raw_link
+
                         if price > 0:
                             extracted_data.append({
                                 "brand": str(item.get('marca', item.get('brand', request.brand))),
@@ -161,7 +166,7 @@ async def scrape_cars(request: ScrapeRequest):
                                 "year": year, "km": km, "price": price,
                                 "currency": str(item.get('moneda', item.get('currency', 'ARS'))).upper(),
                                 "title": str(item.get('title', item.get('title', 'N/A'))),
-                                "url": str(item.get('link', item.get('url', '')))
+                                "url": full_link
                             })
                     except: continue
         except: pass
@@ -187,7 +192,7 @@ async def scrape_cars(request: ScrapeRequest):
             return {
                 "status": "success", "data": df.to_dict('records'),
                 "stats": {"average_price": df['price'].mean(), "count": len(df)},
-                "message": "Scraping optimizado finalizado."
+                "message": "Scraping optimizado finalizado con URLs corregidas."
             }
     
     return {"status": "empty", "message": "No se extrajeron datos válidos."}
