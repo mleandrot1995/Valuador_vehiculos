@@ -5,7 +5,7 @@ from stagehand import Stagehand
 
 # Usamos GEMINI_API_KEY o MODEL_API_KEY
 api_key = model_name = os.environ.get("MODEL_API_KEY")
-model_name = os.environ.get("STAGEHAND_MODEL", "google/gemini-2.0-flash")
+model_name = os.environ.get("STAGEHAND_MODEL", "google/gemini-3-flash-preview")
 
 if not api_key:
     print("❌ Error: Configura GEMINI_API_KEY en tu entorno")
@@ -52,72 +52,18 @@ try:
     response = client.sessions.execute(
             id=session_id,
             execute_options={
-                "instruction": "Siempre ir a la versión de Argentina, al marketplace de autos usados, "
-                "en donde se tiene que ver todo el marketplace de autos usados " \
-                "y no accesorios de autos, verificar que se ingreso correctamente",
+                "instruction": "Acepta cookies si aparecen. Asegúrate de estar en la sección de compra de autos usados (Marketplace). "
+                "Si estás en la home, busca el botón 'Comprar un auto'. "
+                "Una vez allí, verificar si se observan los filtros de búsqueda, en caso de que no se hallen hacer clic en la barra de búsqueda (entry point) para ver filtros si corresponde CASO CONTRARIO NO HACER NADA. "
+                "Aplica los filtros: Marca 'Renault' y Modelo 'Sandero'. "
+                "Confirma que los filtros se aplicaron viendo los resultados en pantalla.",
                 "max_steps": 20,
             },
             agent_config={
-                "model": {"model_name":"google/gemini-2.0-flash"},
+                "model": {"model_name": model_name},
             },
         )
     print(response.data)
-
-
-
-    print("🖱️ Interactuando con la página...")
-    try:
-        # CAMBIO CLAVE: Se usa 'input' en lugar de 'instruction' para .execute()
-        client.sessions.act(
-            id=session_id,
-            input="Acepta las cookies si aparece el cartel"
-        )
-
-        time.sleep(2) # Esperamos a que la acción se ejecute
-    except Exception as e:
-        print(f"⚠️ Nota en act: {e}")
-
-    print("🔍 Intentando filtrado...")
-    try:
-        # Para .extract() el argumento SI suele ser 'instruction'
-        print("🔍 Filtrando por marca...")
-        result = client.sessions.act(
-            id=session_id,
-            input="Realizar el filtrado de la busqueda utilizando los filtros correspondientes de marca (puede estar como lista desplegable)" \
-            " y seleccionar o completar con 'Renault', verificar que la selección haya sido aplicada correctamente" 
-        )
-
-
-        print("🔍 Filtrando por modelo...")
-        result = client.sessions.act(
-            id=session_id,
-            input="Realizar el filtrado de la busqueda utilizando los filtros correspondientes de marca (puede estar como lista desplegable)" \
-            "y seleccionar o completar con 'Sandero', verificar que la selección haya sido aplicada correctamente" 
-        )
-        print("🔍 ejecutar busqueda...")
-        result = client.sessions.act(
-            id=session_id,
-            input="Verificar si es necesario pulsar algún botón para ejecutar la búsqueda " \
-            "y pulsarlo si es así. En caso contrario omitir este paso" 
-        )
-    except Exception as e:
-        print(f"❌ Error en act: {e}")
-
-    print("🔍 Intentando extracción...")
-    try:
-        # Para .extract() el argumento SI suele ser 'instruction'
-        result = client.sessions.extract(
-            id=session_id,
-            instruction="extraer los encabezados de las publicaciones de autos " \
-    "junto con su url o link, y datos relevantes en un " \
-    "json, como marca, modelo, año, trasmisión, combustible,precio"
-        )
-    except Exception as e:
-        print(f"❌ Error en extracción: {e}")
-    
-    print("-" * 30)
-    print(f"📄 DATOS EXTRAÍDOS:\n{result.data.result}")
-    print("-" * 30)
 
 except Exception as e:
     print(f"\n❌ Error: {e}")

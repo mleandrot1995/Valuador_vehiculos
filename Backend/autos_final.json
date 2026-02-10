@@ -1,0 +1,102 @@
+[
+  {
+    "title": "Renault Kwid 1.0 Sce 66cv Zen",
+    "link": "https://auto.mercadolibre.com.ar/MLA-1669795817-autos-usado-renault-kwid-zen-2018-fiat-chevrolet-ford-nissan-_JM#polycard_client=search-desktop&search_layout=grid&position=1&type=item&tracking_id=48e7cfd8-9a5f-4dbc-91b8-0d1ecc74fddc",
+    "price": {
+      "value": 12900000,
+      "currency": "ARS",
+      "raw": "$\n12.900.000"
+    },
+    "raw_text": "=== HEADER ===\n2018 | 90.000 km · Publicado hace 1 día\nRenault Kwid 1.0 Sce 66cv Zen\nAgregar a favoritos",
+    "clean": {
+      "brand": "Renault",
+      "model": "Kwid",
+      "version": "1.0 Sce 66cv Zen",
+      "year": "2018",
+      "km": 90000,
+      "is_new": false,
+      "posted_days_ago": 1,
+      "segment": null
+    }
+  },
+  {
+    "title": "Renault Duster 1.6 4x2 Dynamique L15",
+    "link": "https://auto.mercadolibre.com.ar/MLA-1666812569-renault-duster-16-4x2-dynamique-l15-_JM#polycard_client=search-desktop&search_layout=grid&position=2&type=item&tracking_id=48e7cfd8-9a5f-4dbc-91b8-0d1ecc74fddc",
+    "price": {
+      "value": 22900000,
+      "currency": "ARS",
+      "raw": "$\n22.900.000"
+    },
+    "raw_text": "=== HEADER ===\n2019 | 62.400 km · Publicado hace 3 días\nRenault Duster 1.6 4x2 Dynamique L15\nAgregar a favoritos",
+    "clean": {
+      "brand": "Renault",
+      "model": "Duster",
+      "version": "1.6 4x2 Dynamique L15",
+      "year": 2019,
+      "km": 62400,
+      "is_new": false,
+      "posted_days_ago": 3,
+      "segment": null
+    }
+  },
+  {
+    "title": "Volkswagen T-cross 1.6 Comfortline At",
+    "link": "https://auto.mercadolibre.com.ar/MLA-1669665757-auto-camioneta-usado-volkswagen-t-cross-16-comfortline-2020-_JM#polycard_client=search-desktop&search_layout=grid&position=3&type=item&tracking_id=48e7cfd8-9a5f-4dbc-91b8-0d1ecc74fddc",
+    "price": {
+      "value": 30700000,
+      "currency": "ARS",
+      "raw": "$\n30.700.000"
+    },
+    "raw_text": "=== HEADER ===\n2020 | 97.000 km · Publicado hace 1 día\nVolkswagen T-Cross 1.6 Comfortline At\nAgregar a favoritos",
+    "clean": {
+      "brand": "Volkswagen",
+      "model": "T-Cross",
+      "version": "1.6 Comfortline At",
+      "year": "2020",
+      "km": 97000,
+      "is_new": false,
+      "posted_days_ago": 1,
+      "segment": null
+    }
+  },
+  {
+    "title": "Citroën Basalt 1.0 T200 Shine Cvt",
+    "link": "https://auto.mercadolibre.com.ar/MLA-2825125124-citron-basalt-0km-auto-usado-logan-corsa-nivus-duster-lp-_JM#polycard_client=search-desktop&search_layout=grid&position=4&type=item&tracking_id=48e7cfd8-9a5f-4dbc-91b8-0d1ecc74fddc",
+    "price": {
+      "value": 28500000,
+      "currency": "ARS",
+      "raw": "$\n28.500.000"
+    },
+    "raw_text": "=== HEADER ===\n2025 | 500 km · Publicado hace 5 días\nCitroën Basalt 1.0 T200 Shine Cvt\nAgregar a favoritos",
+    "clean": {
+      "brand": "Citroën",
+      "model": "Basalt",
+      "version": "1.0 T200 Shine Cvt",
+      "year": 2025,
+      "km": 500,
+      "is_new": true,
+      "posted_days_ago": 5,
+      "segment": ""
+    }
+  },
+  {
+    "title": "Citroën C3 1.6 Vti 115 At6 Feel",
+    "link": "https://auto.mercadolibre.com.ar/MLA-2775931386-citron-c3-16-vti-115-at6-feel-usado-0km-gnc-financia-m-_JM#polycard_client=search-desktop&search_layout=grid&position=5&type=item&tracking_id=48e7cfd8-9a5f-4dbc-91b8-0d1ecc74fddc",
+    "price": {
+      "value": 3800000,
+      "currency": "ARS",
+      "raw": "$\n3.800.000"
+    },
+    "raw_text": "=== HEADER ===\n2024 | 0 km · Publicado hace 24 días\nCitroën C3 1.6 Vti 115 At6 Feel\nAgregar a favoritos",
+    "clean": {
+      "brand": "Citroën",
+      "model": "C3",
+      "version": "1.6 Vti 115 At6 Feel",
+      "year": 2024,
+      "km": 0,
+      "is_new": true,
+      "posted_days_ago": 24,
+      "segment": ""
+    }
+  }
+]
