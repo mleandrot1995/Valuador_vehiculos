@@ -44,6 +44,18 @@ class ScrapeRequest(BaseModel):
     km_max: int
     api_key: str
 
+def parse_ai_json(data: any, default: any = None) -> any:
+    """Helper to safely parse JSON from AI responses, handling markdown blocks."""
+    if not isinstance(data, str):
+        return data
+    try:
+        # Remove markdown code blocks if present
+        clean_json = re.sub(r'```json\s*|```\s*', '', data).strip()
+        return json.loads(clean_json)
+    except Exception:
+        logger.warning(f"Failed to parse AI JSON response: {data[:100]}...")
+        return default
+
 def get_full_navigation_instruction(domain: str, brand: str, model: str, year: int) -> str:
     """
     Genera la instrucción completa y robusta para el agente de IA.
@@ -75,11 +87,24 @@ async def scrape_cars(request: ScrapeRequest):
 
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
-    model_name = "google/gemini-3-flash-preview" 
+    # Optimizamos usando gemini-1.5-flash (más económico y estable para scraping)
+    model_name = "google/gemini-1.5-flash" 
     
     extracted_data = []
+    usage_stats = {"total_tokens": 0}
     
     try:
+        def log_token_usage(client, sess_id, action_name):
+            """Obtiene y muestra el uso de tokens acumulado y el delta de la acción."""
+            try:
+                metrics = client.sessions.get_metrics(id=sess_id)
+                new_total = metrics.data.total_tokens
+                delta = new_total - usage_stats["total_tokens"]
+                usage_stats["total_tokens"] = new_total
+                logger.info(f"📊 [Tokens] {action_name} - Usados: {delta} | Total acumulado: {new_total}")
+            except Exception:
+                pass
+
         def run_stagehand_logic():
             # Extraer el dominio dinámicamente de la URL solicitada
             parsed_url = urlparse(request.url)
@@ -113,6 +138,7 @@ async def scrape_cars(request: ScrapeRequest):
                 },
                 agent_config={"model": {"model_name": model_name}},
             )
+            log_token_usage(client_sync, sess_id, "Navegación/Filtrado")
 
             # Verificación rápida de resultados para detener el proceso si no hay nada
             logger.info("🧐 Verificando si existen resultados...")
@@ -121,6 +147,7 @@ async def scrape_cars(request: ScrapeRequest):
                 instruction=f"Analiza la página actual. ¿Se aplicaron correctamente los filtros de Marca (puede tener otros nombres considerar todas las variantes posibles): '{request.brand}', Modelo  (puede tener otros nombres considerar todas las variantes posibles): '{request.model}' y Año  (puede tener otros nombres considerar todas las variantes posibles): '{request.year}'? ¿La página muestra resultados que coinciden con estos filtros, o muestra un mensaje de '0 resultados' o 'No se encontraron vehículos'? Responde false si los filtros no se aplicaron correctamente o si no hay resultados que coincidan con la búsqueda.",
                 schema={"type": "object", "properties": {"has_results": {"type": "boolean"}}}
             )
+            log_token_usage(client_sync, sess_id, "Verificación Resultados")
             
             if not check_result.data.result.get("has_results", False):
                 logger.info("❌ No se encontraron resultados para la búsqueda.")
@@ -128,87 +155,46 @@ async def scrape_cars(request: ScrapeRequest):
                 client_sync.close()
                 return "NO_RESULTS"
 
-            # --- EXTRACCIÓN DETALLADA (Navegando a cada publicación) ---
-            logger.info("💎 Iniciando extracción detallada ingresando a las primeras 5 publicaciones...")
+            # --- EXTRACCIÓN DETALLADA (Navegando uno por uno como usuario) ---
+            logger.info("💎 Iniciando extracción detallada ingresando uno por uno a las publicaciones...")
             
-            # 1. Obtener los links de las primeras 5 publicaciones
-            links_schema = {
-                "type": "object",
-                "properties": {
-                    "links": {
-                        "type": "array",
+            all_extracted_items = []
+            
+            # Capturamos la URL de resultados actual para poder volver después de cada clic
+            results_page_info = client_sync.sessions.extract(
+            # 1. Extraemos los IDs y URLs de una vez para evitar volver a la lista de resultados
+            listings_info = client_sync.sessions.extract(
+                id=sess_id,
+                instruction="Obtén la URL actual de la página de resultados.",
+                schema={"type": "object", "properties": {"url": {"type": "string"}}}
+                instruction="Localiza la lista principal de resultados. Para los primeros 5 vehículos, extrae el valor del atributo 'data-testid' de su etiqueta <a> y su URL (href).",
+                schema={
+                    "type": "object", 
+                    "properties": {
                         "items": {
-                            "type": "object",
-                            "properties": {
-                                "url": {"type": "string", "format": "uri", "description": "URL del atributo href."},
-                                "data-testid": {
-                                    "type": "string",
-                                    "format": "uri-reference",
-                                    "description": "El valor del atributo data-testid de la tarjeta (ej: card-product-485703)."
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "url": {"type": "string"}
                                 }
-                            },
-                            "required": ["url", "data-testid"]
+                            }
                         }
                     }
                 }
-            }
-
-            links_result = client_sync.sessions.extract(
-                id=sess_id,
-                instruction="Analiza las primeras 5 tarjetas de vehículos. Para cada una, extrae el 'href' en el campo 'url' y el valor del atributo 'data-testid'.",
-                schema=links_schema
             )
+            results_data = parse_ai_json(results_page_info.data.result, default={})
+            results_url = results_data.get("url", request.url)
             
-            links_data = links_result.data.result
-            logger.info(f"Sitios encontrados: {links_result}")
-            if isinstance(links_data, str):
-                try:
-                    clean_json = links_data
-                    if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0]
-                    elif "```" in clean_json: clean_json = clean_json.split("```")[1].split("```")[0]
-                    links_data = json.loads(clean_json.strip())
-                except: links_data = {}
+            results_data = parse_ai_json(listings_info.data.result, default={})
+            vehicles_to_process = results_data.get("items", [])
+            logger.info(f"📊 TOTAL IDENTIFICADO: {len(vehicles_to_process)} publicaciones reales.")
             
-            # Manejo robusto de la respuesta (puede ser dict o list)
-            links = []
-            raw_list = []
-            if isinstance(links_data, dict):
-                raw_list = links_data.get("links", [])
-            elif isinstance(links_data, list):
-                raw_list = links_data
-            
-            for item in raw_list:
-                if isinstance(item, dict):
-                    url = item.get("url")
-                    card_product = item.get("card_product", "")
-                    unit_id = None
-                    
-                    if card_product:
-                        # Extraer el ID numérico del data-testid
-                        id_match = re.search(r'(\d+)', card_product)
-                        if id_match:
-                            unit_id = id_match.group(1)
-
-                    # Reconstrucción de seguridad si la IA 'limpió' la URL pero capturó el ID
-                    if url and unit_id and "id=" not in url:
-                        connector = "&" if "?" in url else "?"
-                        url = f"{url}{connector}id={unit_id}"
-                    if url:
-                        links.append(url)
-                elif isinstance(item, str):
-                    links.append(item)
-            
-            # Deduplicar enlaces manteniendo el orden para evitar navegar a la misma URL repetidamente
-            unique_links = list(dict.fromkeys(links))
-            if len(unique_links) < len(links):
-                logger.warning(f"⚠️ Se detectaron {len(links) - len(unique_links)} enlaces duplicados. La IA podría estar capturando links genéricos.")
-            links = unique_links
-            logger.info(f"🔗 Enlaces únicos encontrados para procesar: {links}")
-            
-            links = links[:5]
+            # --- EXTRACCIÓN DETALLADA (Simulando usuario con pestañas) ---
+            logger.info("💎 Iniciando extracción detallada simulando apertura en pestañas...")
             all_extracted_items = []
-            
-            # 2. Esquema para el detalle de cada auto
+
             detail_schema = {
                 "type": "object",
                 "properties": {
@@ -221,38 +207,125 @@ async def scrape_cars(request: ScrapeRequest):
                     "titulo": {"type": "string"},
                     "zona": {"type": "string"},
                     "fecha_publicacion": {"type": "string"}
+                    "fecha_publicacion": {"type": "string"},
+                    "url": {"type": "string"}
                 },
                 "required": ["precio", "titulo"]
             }
 
-            # 3. Navegar a cada link y extraer información detallada
-            for link in links:
-                full_url = urljoin(request.url, link)
-                logger.info(f"🔗 Navegando a detalle: {full_url}")
+            for i in range(1, 6):
+                logger.info(f"🖱️ Intentando ingresar al vehículo #{i}...")
+            for i, v in enumerate(vehicles_to_process, 1):
+                target_url = urljoin(request.url, v.get("url", ""))
+                target_id = re.search(r'(\d+)', v.get("id", "")).group(1) if re.search(r'(\d+)', v.get("id", "")) else None
+                
+                logger.info(f"🚀 Navegando directamente al vehículo #{i} (ID: {target_id})...")
+                logger.info(f"🖱️ Procesando vehículo #{i}...")
                 try:
-                    client_sync.sessions.navigate(id=sess_id, url=full_url)
-                    time.sleep(2) # Espera para carga de contenido dinámico
+                    # Asegurarnos de estar en la lista de resultados
+                    client_sync.sessions.navigate(id=sess_id, url=results_url)
+                    # Navegación directa: mucho más rápida que act()
+                    client_sync.sessions.navigate(id=sess_id, url=target_url)
+                    time.sleep(2)
+                    # Solo navegar de vuelta si no es la primera iteración
+                    if i > 1:
+                        client_sync.sessions.navigate(id=sess_id, url=results_url)
+                        time.sleep(3)
+                    # 1. Extraer info del catálogo para validación posterior
+                    listing_info = client_sync.sessions.extract(
+                        id=sess_id,
+                        instruction=f"Extrae el 'data-testid' y el título del vehículo número {i} en la lista principal.",
+                        instruction=f"Extrae el título y precio del vehículo número {i} en la lista principal.",
+                        schema={
+                            "type": "object",
+                            "properties": {
+                                "data_testid": {"type": "string"},
+                                "title": {"type": "string"}
+                            }
+                        }
+                    )
+                    l_data = parse_ai_json(listing_info.data.result, default={})
+                    target_id_attr = l_data.get("data_testid", "")
+                    listing_title = l_data.get("title", "")
+
+                    # Acción: Click en el i-ésimo resultado como un usuario
+                    # 2. Simular click derecho y abrir en pestaña nueva
+                    client_sync.sessions.act(
                     
+                    # Validación rápida de URL vs ID
+                    url_info = client_sync.sessions.extract(
+                        id=sess_id,
+                        input=f"Haz clic en la tarjeta o título del vehículo número {i} de la lista de resultados. Asegúrate de no hacer clic en publicidad."
+                        input=f"Ignora anuncios, banners y secciones de 'Recomendados'. En la lista principal de resultados, haz clic en el vehículo número {i}. Si es el número 1, asegúrate de que sea el primer resultado real de la búsqueda."
+                        instruction="Obtén la URL actual.",
+                        schema={"type": "object", "properties": {"url": {"type": "string"}}}
+                        input=f"Haz clic derecho en el vehículo número {i} de la lista principal y ábrelo en una pestaña nueva. Cambia el foco a esa pestaña."
+                    )
+                    log_token_usage(client_sync, sess_id, f"Click Vehículo #{i}")
+                    # Nota: act() puede no devolver uso de tokens en todas las versiones
+                    time.sleep(3) # Espera para carga del detalle
+                    current_url = parse_ai_json(url_info.data.result, default={}).get("url", "")
+                    time.sleep(4)
+                    
+                    if target_id and target_id not in current_url:
+                        logger.warning(f"⚠️ Validación fallida: La URL {current_url} no contiene el ID {target_id}. Reintentando...")
+                        # Aquí podrías implementar un reintento o simplemente saltar
+                        continue
+                    
+
                     detail_result = client_sync.sessions.extract(
                         id=sess_id,
                         instruction="Extrae la información detallada del vehículo de esta página (marca, modelo, año, km, precio, moneda, título, zona, fecha de publicación).",
+                        instruction="Extrae la información detallada del vehículo y la URL actual de la página.",
                         schema=detail_schema
                     )
+                    log_token_usage(client_sync, sess_id, f"Extracción Vehículo #{i}")
                     
-                    item = detail_result.data.result
-                    logger.info(f"🔗 Información sobre el vehiculos: {item}")
-                    if isinstance(item, str):
-                        try:
-                            clean_json = item
-                            if "```json" in clean_json: clean_json = clean_json.split("```json")[1].split("```")[0]
-                            item = json.loads(clean_json.strip())
-                        except: item = None
+                    item = parse_ai_json(detail_result.data.result)
+                    logger.info(f"✅ Datos extraídos del vehículo #{i}: {item}")
+                    current_url = item.get("url", "")
+                    detail_title = item.get("titulo", "")
+
+                    # 3. Validación de ID y Encabezado
+                    id_in_url = re.search(r'id=(\d+)', current_url)
+                    id_in_attr = re.search(r'(\d+)', target_id_attr)
+                    
+                    if id_in_url and id_in_attr and id_in_url.group(1) == id_in_attr.group(1):
+                        logger.info(f"✅ Validación de ID exitosa para vehículo #{i}")
+                        if listing_title.lower() in detail_title.lower() or detail_title.lower() in listing_title.lower():
+                            logger.info(f"✅ Validación de encabezado exitosa para vehículo #{i}")
+                            all_extracted_items.append(item)
+                        else:
+                            logger.warning(f"⚠️ El título no coincide: '{listing_title}' vs '{detail_title}'")
+                    else:
+                        logger.warning(f"⚠️ Fallo en validación de ID: Atributo {target_id_attr} vs URL {current_url}")
 
                     if item:
-                        item['link'] = full_url
+                        # Obtener la URL del detalle para el registro
+                        url_info = client_sync.sessions.extract(
+                            id=sess_id,
+                            instruction="Obtén la URL actual de la página.",
+                            schema={"type": "object", "properties": {"url": {"type": "string"}}}
+                        )
+                        log_token_usage(client_sync, sess_id, f"URL Vehículo #{i}")
+                        url_data = parse_ai_json(url_info.data.result, default={})
+                        item['link'] = url_data.get("url", "")
+                    # 3. Validación de Encabezado
+                    if listing_title.lower() in detail_title.lower() or detail_title.lower() in listing_title.lower():
+                        logger.info(f"✅ Validación de encabezado exitosa para vehículo #{i}")
+                        item['link'] = current_url
                         all_extracted_items.append(item)
+                    else:
+                        logger.warning(f"⚠️ El título no coincide: '{listing_title}' vs '{detail_title}'")
+
+                    # 4. Cerrar pestaña y volver a la lista
+                    client_sync.sessions.act(
+                        id=sess_id,
+                        input="Cierra la pestaña actual y vuelve a la pestaña de la lista de resultados."
+                    )
+                    time.sleep(2)
                 except Exception as e:
-                    logger.error(f"⚠️ Error extrayendo detalle de {full_url}: {e}")
+                    logger.error(f"⚠️ Error procesando vehículo #{i}: {e}")
                     continue
 
             client_sync.sessions.end(id=sess_id)
@@ -266,16 +339,7 @@ async def scrape_cars(request: ScrapeRequest):
 
         # PROCESAMIENTO RÁPIDO Y ROBUSTO
         try:
-            items = []
-            if isinstance(raw_results, str):
-                clean_json = raw_results
-                if "```json" in clean_json:
-                    clean_json = clean_json.split("```json")[1].split("```")[0]
-                elif "```" in clean_json:
-                    clean_json = clean_json.split("```")[1].split("```")[0]
-                items = json.loads(clean_json.strip())
-            else:
-                items = raw_results
+            items = parse_ai_json(raw_results, default=[])
 
             # Extraer lista del objeto Schema
             if isinstance(items, dict) and 'autos' in items:

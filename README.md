@@ -43,6 +43,7 @@ Es necesario inicializar el motor de Stagehand manualmente en la carpeta del Bac
 cd Backend
 npm install stagehand
 node .\node_modules\stagehand\lib\index.js init
+python download-binary.py
 ```
 
 ### 6. Instalar Navegadores de Playwright
