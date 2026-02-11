@@ -13,6 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+import importlib.util
+import psycopg2
+from psycopg2.extras import execute_values, RealDictCursor
 
 # Cargar variables de entorno
 load_dotenv()
@@ -30,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-origins = ["http://localhost:8501", "http://127.0.0.1:8501", "*"]
+frontend_port = os.getenv("FRONTEND_PORT", "8501")
+origins = [f"http://localhost:{frontend_port}", f"http://127.0.0.1:{frontend_port}", "*"]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 DATA_FILE = os.path.abspath(os.path.join("data", "publicaciones.json"))
@@ -41,20 +45,64 @@ class ScrapeRequest(BaseModel):
     brand: str
     model: str
     year: int
+    version: str
     km_max: int
     api_key: str
+    patente: str = None
 
-def parse_ai_json(data: any, default: any = None) -> any:
-    """Helper to safely parse JSON from AI responses, handling markdown blocks."""
-    if not isinstance(data, str):
-        return data
+def get_db_connection():
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        database=os.getenv("DB_NAME", "valuador_db"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASS", "password")
+    )
+
+def save_to_db(extracted_data, stats, domain, request_data):
+    """Persiste los datos en PostgreSQL: tabla transaccional y tabla de resultados."""
     try:
-        # Remove markdown code blocks if present
-        clean_json = re.sub(r'```json\s*|```\s*', '', data).strip()
-        return json.loads(clean_json)
-    except Exception:
-        logger.warning(f"Failed to parse AI JSON response: {data[:100]}...")
-        return default
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 1. Tabla Transaccional: extractions
+        if extracted_data:
+            insert_query = """
+                INSERT INTO extractions (brand, model, version, year, km, price, currency, title, combustible, transmision, zona, fecha_publicacion, reservado, url, site)
+                VALUES %s
+            """
+            values = [
+                (
+                    item.get('brand'), item.get('model'), item.get('version'), item.get('year'), item.get('km'), 
+                    item.get('price'), item.get('currency'), item.get('title'), item.get('combustible'), 
+                    item.get('transmision'), item.get('zona'), item.get('fecha_publicacion'), 
+                    item.get('reservado'), item.get('url'), domain
+                ) for item in extracted_data
+            ]
+            execute_values(cur, insert_query, values)
+
+        # 2. Tabla de Resultados: stock_comparison
+        if request_data.patente:
+            site_map = {"kavak": "kavak", "mercadolibre": "meli", "tiendacars": "tienda_cars", "motormax": "motor_max", "autocity": "auto_city", "randazzo": "randazzo"}
+            col = next((v for k, v in site_map.items() if k in domain), None)
+            
+            if col:
+                avg_price = stats.get("average_price", 0)
+                cur.execute(f"UPDATE stock_comparison SET {col} = %s WHERE patente = %s", (avg_price, request_data.patente))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info("✅ Datos persistidos en PostgreSQL correctamente.")
+    except Exception as e:
+        logger.error(f"❌ Error persistiendo en DB: {e}")
+
+def load_scraper_module(file_name):
+    """Carga dinámicamente un módulo de scraping desde un archivo."""
+    path = os.path.join(os.path.dirname(__file__), file_name)
+    spec = importlib.util.spec_from_file_location(file_name.replace(" ", "_"), path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 def get_full_navigation_instruction(domain: str, brand: str, model: str, year: int) -> str:
     """
@@ -62,7 +110,7 @@ def get_full_navigation_instruction(domain: str, brand: str, model: str, year: i
     """
     base_instr = (
         "1. Si aparece un cartel de cookies o selección de país/región, acéptalo o ciérralo.\n"
-        "2. Asegúrate de estar en la sección de compra de autos usados (Marketplace). Si estás en la home, busca el botón 'Comprar un auto' o similar.\n"
+        "2. Asegúrate de estar en la sección de compra de autos o categoria de Vehiculos (Marketplace). Si estás en la home, busca el botón 'Comprar un auto', Categoria 'Vehiculos' o similar.\n"
         "3. Verificar si se observan los filtros de búsqueda, en caso de que no se hallen hacer clic en la barra de búsqueda (entry point) para ver filtros si corresponde CASO CONTRARIO NO HACER NADA.\n"
         "REGLA CRÍTICA: Si no encuentras el valor exacto solicitado para CUALQUIERA de los filtros (Marca, Modelo, Año, Disponibilidad, KM, etc.), DETÉN el proceso inmediatamente. No intentes seleccionar valores similares ni continúes con el resto de los pasos.\n"
     )
@@ -74,9 +122,28 @@ def get_full_navigation_instruction(domain: str, brand: str, model: str, year: i
             "7. Haz scroll para cargar los resultados."
         )
     elif "mercadolibre" in domain:
-        return base_instr + f"4. Analiza la página para localizar los botones o menús de filtrado de 'Marca' y 'Modelo'. Haz clic en ellos y selecciona '{brand}' y '{model}' respectivamente.\n5. Busca el filtro de 'Condición' en la barra lateral y selecciona 'Usados' para filtrar los resultados.\n6. Haz scroll para cargar las publicaciones."
+        return base_instr + (
+            f"4. Analiza la página para localizar los botones o menús de filtrado de 'Marca' y 'Modelo'. Haz clic en ellos y selecciona '{brand}' y '{model}' respectivamente y si se especifica que deben ser autos 'USADOS'.\n"
+            f"5. Una vez aplicados los filtros anteriores, busca el filtro de 'Año' en la barra lateral o lista de opciones y selecciona el año '{year}'.\n"
+            "6. Busca el filtro de 'Condición' en la barra lateral y selecciona 'Usados' para filtrar los resultados si ya esta filtrado por Usados, NO HACER NADA.\n"
+            "7. Haz scroll para cargar las publicaciones.\n"
+        )
     else:
         return base_instr + f"4. Busca y filtra por Marca '{brand}', Modelo '{model}' y Año '{year}'.\n5. Haz scroll para cargar resultados."
+
+@app.get("/stock")
+async def get_stock():
+    """Obtiene la lista de vehículos en stock."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT patente, marca, modelo, anio, km, precio_venta FROM stock_comparison ORDER BY marca, modelo")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/scrape")
 async def scrape_cars(request: ScrapeRequest):
@@ -87,24 +154,11 @@ async def scrape_cars(request: ScrapeRequest):
 
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
-    # Optimizamos usando gemini-1.5-flash (más económico y estable para scraping)
-    model_name = "google/gemini-1.5-flash" 
+    model_name = "google/gemini-2.5-flash" 
     
     extracted_data = []
-    usage_stats = {"total_tokens": 0}
     
     try:
-        def log_token_usage(client, sess_id, action_name):
-            """Obtiene y muestra el uso de tokens acumulado y el delta de la acción."""
-            try:
-                metrics = client.sessions.get_metrics(id=sess_id)
-                new_total = metrics.data.total_tokens
-                delta = new_total - usage_stats["total_tokens"]
-                usage_stats["total_tokens"] = new_total
-                logger.info(f"📊 [Tokens] {action_name} - Usados: {delta} | Total acumulado: {new_total}")
-            except Exception:
-                pass
-
         def run_stagehand_logic():
             # Extraer el dominio dinámicamente de la URL solicitada
             parsed_url = urlparse(request.url)
@@ -138,7 +192,6 @@ async def scrape_cars(request: ScrapeRequest):
                 },
                 agent_config={"model": {"model_name": model_name}},
             )
-            log_token_usage(client_sync, sess_id, "Navegación/Filtrado")
 
             # Verificación rápida de resultados para detener el proceso si no hay nada
             logger.info("🧐 Verificando si existen resultados...")
@@ -147,7 +200,6 @@ async def scrape_cars(request: ScrapeRequest):
                 instruction=f"Analiza la página actual. ¿Se aplicaron correctamente los filtros de Marca (puede tener otros nombres considerar todas las variantes posibles): '{request.brand}', Modelo  (puede tener otros nombres considerar todas las variantes posibles): '{request.model}' y Año  (puede tener otros nombres considerar todas las variantes posibles): '{request.year}'? ¿La página muestra resultados que coinciden con estos filtros, o muestra un mensaje de '0 resultados' o 'No se encontraron vehículos'? Responde false si los filtros no se aplicaron correctamente o si no hay resultados que coincidan con la búsqueda.",
                 schema={"type": "object", "properties": {"has_results": {"type": "boolean"}}}
             )
-            log_token_usage(client_sync, sess_id, "Verificación Resultados")
             
             if not check_result.data.result.get("has_results", False):
                 logger.info("❌ No se encontraron resultados para la búsqueda.")
@@ -155,183 +207,38 @@ async def scrape_cars(request: ScrapeRequest):
                 client_sync.close()
                 return "NO_RESULTS"
 
-            # --- EXTRACCIÓN DETALLADA (Navegando uno por uno como usuario) ---
-            logger.info("💎 Iniciando extracción detallada ingresando uno por uno a las publicaciones...")
-            
-            all_extracted_items = []
-            
-            # Capturamos la URL de resultados actual para poder volver después de cada clic
-            results_page_info = client_sync.sessions.extract(
-            # 1. Extraemos los IDs y URLs de una vez para evitar volver a la lista de resultados
-            listings_info = client_sync.sessions.extract(
+            # Si hay resultados, capturamos la URL actual con filtros aplicados y continuamos
+            url_res = client_sync.sessions.extract(
                 id=sess_id,
-                instruction="Obtén la URL actual de la página de resultados.",
-                schema={"type": "object", "properties": {"url": {"type": "string"}}}
-                instruction="Localiza la lista principal de resultados. Para los primeros 5 vehículos, extrae el valor del atributo 'data-testid' de su etiqueta <a> y su URL (href).",
-                schema={
-                    "type": "object", 
-                    "properties": {
-                        "items": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "id": {"type": "string"},
-                                    "url": {"type": "string"}
-                                }
-                            }
-                        }
-                    }
-                }
+                instruction="Obtén la URL actual de la página.",
+                schema={"type": "object", "properties": {"url": {"type": "string","format": "uri"}}}
             )
-            results_data = parse_ai_json(results_page_info.data.result, default={})
-            results_url = results_data.get("url", request.url)
-            
-            results_data = parse_ai_json(listings_info.data.result, default={})
-            vehicles_to_process = results_data.get("items", [])
-            logger.info(f"📊 TOTAL IDENTIFICADO: {len(vehicles_to_process)} publicaciones reales.")
-            
-            # --- EXTRACCIÓN DETALLADA (Simulando usuario con pestañas) ---
-            logger.info("💎 Iniciando extracción detallada simulando apertura en pestañas...")
+            current_url = url_res.data.result.get("url", request.url)
+            logger.info(f"✅ Resultados confirmados. Continuando scraping desde: {current_url}")
+
+            # --- EXTRACCIÓN DETALLADA (Navegando a cada publicación) ---
+            logger.info("💎 Iniciando extracción detallada modularizada...")
             all_extracted_items = []
-
-            detail_schema = {
-                "type": "object",
-                "properties": {
-                    "marca": {"type": "string"},
-                    "modelo": {"type": "string"},
-                    "año": {"type": "integer"},
-                    "km": {"type": "integer"},
-                    "precio": {"type": "number"},
-                    "moneda": {"type": "string"},
-                    "titulo": {"type": "string"},
-                    "zona": {"type": "string"},
-                    "fecha_publicacion": {"type": "string"}
-                    "fecha_publicacion": {"type": "string"},
-                    "url": {"type": "string"}
-                },
-                "required": ["precio", "titulo"]
-            }
-
-            for i in range(1, 6):
-                logger.info(f"🖱️ Intentando ingresar al vehículo #{i}...")
-            for i, v in enumerate(vehicles_to_process, 1):
-                target_url = urljoin(request.url, v.get("url", ""))
-                target_id = re.search(r'(\d+)', v.get("id", "")).group(1) if re.search(r'(\d+)', v.get("id", "")) else None
-                
-                logger.info(f"🚀 Navegando directamente al vehículo #{i} (ID: {target_id})...")
-                logger.info(f"🖱️ Procesando vehículo #{i}...")
-                try:
-                    # Asegurarnos de estar en la lista de resultados
-                    client_sync.sessions.navigate(id=sess_id, url=results_url)
-                    # Navegación directa: mucho más rápida que act()
-                    client_sync.sessions.navigate(id=sess_id, url=target_url)
-                    time.sleep(2)
-                    # Solo navegar de vuelta si no es la primera iteración
-                    if i > 1:
-                        client_sync.sessions.navigate(id=sess_id, url=results_url)
-                        time.sleep(3)
-                    # 1. Extraer info del catálogo para validación posterior
-                    listing_info = client_sync.sessions.extract(
-                        id=sess_id,
-                        instruction=f"Extrae el 'data-testid' y el título del vehículo número {i} en la lista principal.",
-                        instruction=f"Extrae el título y precio del vehículo número {i} en la lista principal.",
-                        schema={
-                            "type": "object",
-                            "properties": {
-                                "data_testid": {"type": "string"},
-                                "title": {"type": "string"}
-                            }
-                        }
-                    )
-                    l_data = parse_ai_json(listing_info.data.result, default={})
-                    target_id_attr = l_data.get("data_testid", "")
-                    listing_title = l_data.get("title", "")
-
-                    # Acción: Click en el i-ésimo resultado como un usuario
-                    # 2. Simular click derecho y abrir en pestaña nueva
-                    client_sync.sessions.act(
-                    
-                    # Validación rápida de URL vs ID
-                    url_info = client_sync.sessions.extract(
-                        id=sess_id,
-                        input=f"Haz clic en la tarjeta o título del vehículo número {i} de la lista de resultados. Asegúrate de no hacer clic en publicidad."
-                        input=f"Ignora anuncios, banners y secciones de 'Recomendados'. En la lista principal de resultados, haz clic en el vehículo número {i}. Si es el número 1, asegúrate de que sea el primer resultado real de la búsqueda."
-                        instruction="Obtén la URL actual.",
-                        schema={"type": "object", "properties": {"url": {"type": "string"}}}
-                        input=f"Haz clic derecho en el vehículo número {i} de la lista principal y ábrelo en una pestaña nueva. Cambia el foco a esa pestaña."
-                    )
-                    log_token_usage(client_sync, sess_id, f"Click Vehículo #{i}")
-                    # Nota: act() puede no devolver uso de tokens en todas las versiones
-                    time.sleep(3) # Espera para carga del detalle
-                    current_url = parse_ai_json(url_info.data.result, default={}).get("url", "")
-                    time.sleep(4)
-                    
-                    if target_id and target_id not in current_url:
-                        logger.warning(f"⚠️ Validación fallida: La URL {current_url} no contiene el ID {target_id}. Reintentando...")
-                        # Aquí podrías implementar un reintento o simplemente saltar
-                        continue
-                    
-
-                    detail_result = client_sync.sessions.extract(
-                        id=sess_id,
-                        instruction="Extrae la información detallada del vehículo de esta página (marca, modelo, año, km, precio, moneda, título, zona, fecha de publicación).",
-                        instruction="Extrae la información detallada del vehículo y la URL actual de la página.",
-                        schema=detail_schema
-                    )
-                    log_token_usage(client_sync, sess_id, f"Extracción Vehículo #{i}")
-                    
-                    item = parse_ai_json(detail_result.data.result)
-                    logger.info(f"✅ Datos extraídos del vehículo #{i}: {item}")
-                    current_url = item.get("url", "")
-                    detail_title = item.get("titulo", "")
-
-                    # 3. Validación de ID y Encabezado
-                    id_in_url = re.search(r'id=(\d+)', current_url)
-                    id_in_attr = re.search(r'(\d+)', target_id_attr)
-                    
-                    if id_in_url and id_in_attr and id_in_url.group(1) == id_in_attr.group(1):
-                        logger.info(f"✅ Validación de ID exitosa para vehículo #{i}")
-                        if listing_title.lower() in detail_title.lower() or detail_title.lower() in listing_title.lower():
-                            logger.info(f"✅ Validación de encabezado exitosa para vehículo #{i}")
-                            all_extracted_items.append(item)
-                        else:
-                            logger.warning(f"⚠️ El título no coincide: '{listing_title}' vs '{detail_title}'")
-                    else:
-                        logger.warning(f"⚠️ Fallo en validación de ID: Atributo {target_id_attr} vs URL {current_url}")
-
-                    if item:
-                        # Obtener la URL del detalle para el registro
-                        url_info = client_sync.sessions.extract(
-                            id=sess_id,
-                            instruction="Obtén la URL actual de la página.",
-                            schema={"type": "object", "properties": {"url": {"type": "string"}}}
-                        )
-                        log_token_usage(client_sync, sess_id, f"URL Vehículo #{i}")
-                        url_data = parse_ai_json(url_info.data.result, default={})
-                        item['link'] = url_data.get("url", "")
-                    # 3. Validación de Encabezado
-                    if listing_title.lower() in detail_title.lower() or detail_title.lower() in listing_title.lower():
-                        logger.info(f"✅ Validación de encabezado exitosa para vehículo #{i}")
-                        item['link'] = current_url
-                        all_extracted_items.append(item)
-                    else:
-                        logger.warning(f"⚠️ El título no coincide: '{listing_title}' vs '{detail_title}'")
-
-                    # 4. Cerrar pestaña y volver a la lista
-                    client_sync.sessions.act(
-                        id=sess_id,
-                        input="Cierra la pestaña actual y vuelve a la pestaña de la lista de resultados."
-                    )
-                    time.sleep(2)
-                except Exception as e:
-                    logger.error(f"⚠️ Error procesando vehículo #{i}: {e}")
-                    continue
+            max_pubs = 5  # Límite heredado a los módulos
+            
+            if "kavak" in domain:
+                kavak_module = load_scraper_module("prueba scrap kavak.py")
+                all_extracted_items = kavak_module.extract_kavak_details(
+                    client_sync, sess_id, current_url, max_pubs, model_name
+                )
+            elif "mercadolibre" in domain:
+                meli_module = load_scraper_module("prueba scrap meli.py")
+                all_extracted_items = meli_module.extract_meli_details(
+                    client_sync, sess_id, current_url, max_pubs, request.version, model_name
+                )
+            else:
+                logger.warning(f"⚠️ Dominio {domain} no tiene un scraper modularizado configurado.")
 
             client_sync.sessions.end(id=sess_id)
             client_sync.close()
+            logger.info(f"✅ autos: {all_extracted_items}")
             return {"autos": all_extracted_items}
-
+            
         raw_results = await asyncio.to_thread(run_stagehand_logic)
         
         if raw_results == "NO_RESULTS":
@@ -339,7 +246,16 @@ async def scrape_cars(request: ScrapeRequest):
 
         # PROCESAMIENTO RÁPIDO Y ROBUSTO
         try:
-            items = parse_ai_json(raw_results, default=[])
+            items = []
+            if isinstance(raw_results, str):
+                clean_json = raw_results
+                if "```json" in clean_json:
+                    clean_json = clean_json.split("```json")[1].split("```")[0]
+                elif "```" in clean_json:
+                    clean_json = clean_json.split("```")[1].split("```")[0]
+                items = json.loads(clean_json.strip())
+            else:
+                items = raw_results
 
             # Extraer lista del objeto Schema
             if isinstance(items, dict) and 'autos' in items:
@@ -362,7 +278,7 @@ async def scrape_cars(request: ScrapeRequest):
                                 return float(s) if s else 0.0
                             except: return 0.0
 
-                        price = clean_num(item.get('precio', item.get('price', 0)))
+                        price = clean_num(item.get('precio', item.get('price', item.get('precio_contado', 0))))
                         km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
                         year = int(clean_num(item.get('año', item.get('year', request.year))))
 
@@ -371,17 +287,22 @@ async def scrape_cars(request: ScrapeRequest):
                         
                         full_link = urljoin("https://www.kavak.com", raw_link) if "kavak" in request.url else urljoin(request.url, raw_link)
 
-                        if price > 0:
-                            extracted_data.append({
-                                "brand": str(item.get('marca', item.get('brand', request.brand))),
-                                "model": str(item.get('modelo', item.get('model', request.model))),
-                                "year": year, "km": km, "price": price,
-                                "currency": str(item.get('moneda', item.get('currency', 'ARS'))).upper(),
-                                "title": str(item.get('titulo', item.get('title', 'N/A'))),
-                                "zona": str(item.get('zona', 'N/A')),
-                                "fecha_publicacion": str(item.get('fecha_publicacion', 'N/A')),
-                                "url": full_link
-                            })
+                        extracted_data.append({
+                            "brand": str(item.get('marca', item.get('brand', request.brand))),
+                            "model": str(item.get('modelo', item.get('model', request.model))),
+                            "version": str(item.get('version', 'N/A')),
+                            "year": year, 
+                            "km": km, 
+                            "price": price,
+                            "currency": str(item.get('moneda', item.get('currency', 'ARS'))).upper(),
+                            "title": str(item.get('titulo', item.get('title', 'N/A'))),
+                            "combustible": str(item.get('combustible', 'N/A')),
+                            "transmision": str(item.get('transmision', 'N/A')),
+                            "zona": str(item.get('zona', item.get('ubicacion', 'N/A'))),
+                            "fecha_publicacion": str(item.get('fecha_publicacion', 'N/A')),
+                            "reservado": bool(item.get('reservado', False)),
+                            "url": full_link
+                        })
                     except: continue
 
         except Exception as parse_err:
@@ -393,8 +314,8 @@ async def scrape_cars(request: ScrapeRequest):
     # Respuesta Final
     if extracted_data:
         df = pd.DataFrame(extracted_data)
-        # Filtro de seguridad post-IA
-        df = df[(df['km'] <= request.km_max) & (df['year'].between(request.year - 1, request.year + 1))]
+        # Se elimina el filtro de seguridad post-IA para permitir visualizar todas las publicaciones halladas.
+        # La IA ya realiza el filtrado por versión y año durante la navegación.
         
         if not df.empty:
             os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -406,13 +327,24 @@ async def scrape_cars(request: ScrapeRequest):
             all_data.extend(df.to_dict('records'))
             with open(DATA_FILE, "w") as f: json.dump(all_data, f, indent=4)
             
+            res_stats = {
+                "average_price": df[df['price'] > 0]['price'].mean() if not df[df['price'] > 0].empty else 0, 
+                "count": len(df)
+            }
+
+            # Persistencia en DB
+            parsed_url = urlparse(request.url)
+            domain = parsed_url.netloc.replace("www.", "")
+            save_to_db(extracted_data, res_stats, domain, request)
+
             return {
                 "status": "success", "data": df.to_dict('records'),
-                "stats": {"average_price": df['price'].mean(), "count": len(df)},
+                "stats": res_stats,
                 "message": f"Se extrajeron {len(df)} publicaciones exitosamente."
             }
     
     return {"status": "empty", "message": "No se encontraron publicaciones válidas."}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("BACKEND_PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

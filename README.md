@@ -12,6 +12,7 @@ Este proyecto es una aplicación de scraping asistido por IA para autos usados, 
 ### 1. Prerrequisitos
 *   **Python 3.8+** instalado.
 *   **Node.js 20+** instalado (Requerido por Stagehand). [Descargar aquí](https://nodejs.org/).
+*   **PostgreSQL** instalado y en ejecución.
 *   **Git** instalado.
 
 ### 2. Clonar el repositorio

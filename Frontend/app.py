@@ -3,12 +3,19 @@ import httpx
 import pandas as pd
 import json
 import time
+import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv()
 
 # Configuración básica de Streamlit
 st.set_page_config(page_title="AI Car Scraper", layout="wide")
 
 st.title("🚗 AI Assisted Car Scraper")
 st.markdown("### Scraping inteligente para autos usados (ej. Kavak)")
+
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 # 1. Interfaz de Usuario: Sidebar
 with st.sidebar:
@@ -18,17 +25,63 @@ with st.sidebar:
     base_url = st.text_input("Base URL (Ollama)", value="http://localhost:11434")
     
     st.divider()
-    st.info("Asegúrese de que el Backend esté corriendo en http://localhost:8000")
+    st.info(f"Conectado al Backend en: {BACKEND_URL}")
+
+# Función para obtener stock
+@st.cache_data(ttl=60)
+def fetch_stock():
+    try:
+        response = httpx.get(f"{BACKEND_URL}/stock")
+        if response.status_code == 200:
+            return response.json()
+    except:
+        return []
+    return []
 
 # Cuerpo principal
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("Parámetros de Búsqueda")
+    st.subheader("Selección de Vehículo")
+    stock_list = fetch_stock()
+    
+    if not stock_list:
+        st.error("No se pudo cargar el stock desde la base de datos.")
+        st.stop()
+
+    df_stock = pd.DataFrame(stock_list)
+    # Separar modelo y versión del campo 'modelo' de la DB (formato: "MODELO - VERSION")
+    split_data = df_stock['modelo'].str.split(" - ", n=1, expand=True)
+    df_stock['model_name'] = split_data[0]
+    df_stock['version_name'] = split_data[1].fillna("N/A")
+
+    # 1. Selección de Marca
+    brands = sorted(df_stock['marca'].unique().tolist())
+    brand = st.selectbox("Marca", options=brands)
+    
+    # 2. Selección de Modelo (dependiente de Marca)
+    models = sorted(df_stock[df_stock['marca'] == brand]['model_name'].unique().tolist())
+    model = st.selectbox("Modelo", options=models)
+    
+    # 3. Selección de Versión (dependiente de Modelo)
+    versions = sorted(df_stock[(df_stock['marca'] == brand) & (df_stock['model_name'] == model)]['version_name'].unique().tolist())
+    version = st.selectbox("Versión", options=versions)
+    
+    # 4. Selección de Año (dependiente de Versión)
+    years = sorted(df_stock[(df_stock['marca'] == brand) & 
+                            (df_stock['model_name'] == model) & 
+                            (df_stock['version_name'] == version)]['anio'].unique().tolist(), reverse=True)
+    year = st.selectbox("Año", options=years)
+
+    # Obtener datos del registro seleccionado para la patente
+    selected_car = df_stock[(df_stock['marca'] == brand) & 
+                            (df_stock['model_name'] == model) & 
+                            (df_stock['version_name'] == version) &
+                            (df_stock['anio'] == year)].iloc[0]
+    
+    default_patente = str(selected_car['patente'])
+
     target_url = st.text_input("URL Objetivo", value="https://www.kavak.com/ar")
-    brand = st.text_input("Marca", value="Toyota")
-    model = st.text_input("Modelo", value="Corolla")
-    year = st.number_input("Año", min_value=2000, max_value=2025, value=2020)
     km_max = st.number_input("KM Máximo", min_value=0, step=5000, value=50000)
     
     scrape_btn = st.button("Iniciar Scraping", type="primary")
@@ -49,6 +102,8 @@ if scrape_btn:
                 "brand": brand,
                 "model": model,
                 "year": year,
+                "patente": default_patente,
+                "version": version,
                 "km_max": km_max,
                 "api_key": api_key
             }
@@ -58,7 +113,7 @@ if scrape_btn:
                 # AUMENTO DE TIMEOUT: Stagehand realiza muchos pasos y la IA de Gemini 2.0 
                 # puede tardar en razonar cada uno. Subimos a 10 minutos para dar margen total.
                 response = httpx.post(
-                    "http://localhost:8000/scrape", 
+                    f"{BACKEND_URL}/scrape", 
                     json=payload, 
                     timeout=600.0 # 10 minutos en segundos
                 )

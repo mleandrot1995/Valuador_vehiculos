@@ -1,3 +1,4 @@
 streamlit
 httpx
 pandas
+python-dotenv
