@@ -18,9 +18,15 @@ try:
 except ImportError:
     Stagehand = None
 
-def extract_meli_details(client_sync, sess_id, results_url, max_publications, target_version, model_name):
+def extract_meli_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, progress_callback=None):
     """Extrae detalles de publicaciones de MeLi recopilando URLs y navegando a cada una."""
     logger = logging.getLogger(__name__)
+
+    def notify(msg):
+        if progress_callback:
+            progress_callback(msg)
+        logger.info(msg)
+
     usage_stats = {"total_tokens": 0}
 
     def log_token_usage(action_name):
@@ -38,11 +44,11 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
     page_number = 1
 
     while True:
-        logger.info(f"📄 [MeLi] Recopilando URLs de página {page_number} desde la sesión activa...")
+        notify(f"📄 [MeLi] Recopilando URLs de página {page_number}...")
         try:
             listings_info = client_sync.sessions.extract(
                 id=sess_id,
-                instruction=f"Localiza la lista principal de resultados. Extrae el título, la versión y la URL (href) de los vehículos (máximo {max_publications}). FILTRO CRÍTICO: Solo incluye vehículos cuya versión (Sin tener en cuenta la marca y el modelo) coincida al menos en un 82% con '{target_version}'.",
+                instruction=f"Localiza la lista principal de resultados. Extrae el título, la versión y la URL (href) de los vehículos (máximo {max_publications}). FILTRO CRÍTICO: Solo incluye vehículos cuya versión (Sin tener en cuenta la marca y el modelo) coincida al menos en un 60% con '{target_version}'.",
                 schema={
                     "type": "object",
                     "properties": {
@@ -62,6 +68,8 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
             )
             page_vehicles = listings_info.data.result.get("vehicles", [])
             all_vehicles.extend(page_vehicles)
+            if page_number == 1 and not page_vehicles:
+                notify(f"⚠️ No se encontraron vehículos que coincidan con '{target_version}' en el listado.")
             if len(all_vehicles) >= max_publications:
                 all_vehicles = all_vehicles[:max_publications]
                 break
@@ -91,7 +99,8 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
         if not listing_url: continue
         
         full_detail_url = urljoin(results_url, listing_url)
-        logger.info(f"🚀 [{i}/{len(all_vehicles)}] Navegando a: {full_detail_url}")
+        notify(f"🔍 Extrayendo detalles del vehículo {i} de {len(all_vehicles)}...")
+        notify(f"🚀 [{i}/{len(all_vehicles)}] Extrayendo: {v_data.get('title', 'Vehículo')[:30]}...")
         
         try:
             client_sync.sessions.navigate(id=sess_id, url=full_detail_url)

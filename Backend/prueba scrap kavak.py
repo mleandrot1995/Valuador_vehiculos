@@ -18,9 +18,15 @@ try:
 except ImportError:
     Stagehand = None
 
-def extract_kavak_details(client_sync, sess_id, results_url, max_publications, model_name):
+def extract_kavak_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, progress_callback=None):
     """Extrae detalles de publicaciones de Kavak utilizando la lógica de navegación y clic."""
     logger = logging.getLogger(__name__)
+
+    def notify(msg):
+        if progress_callback:
+            progress_callback(msg)
+        logger.info(msg)
+
     usage_stats = {"total_tokens": 0}
 
     def log_token_usage(action_name):
@@ -57,7 +63,10 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, m
             }
         )
         vehicles = listings_info.data.result.get("vehicles", [])
-        logger.info(f"📊 TOTAL IDENTIFICADO: {len(vehicles)} publicaciones.")
+        if not vehicles:
+            notify("⚠️ No se encontraron vehículos en el listado de resultados.")
+            return []
+        notify(f"📊 TOTAL IDENTIFICADO: {len(vehicles)} publicaciones.")
     except Exception as e:
         logger.error(f"❌ Error identificando publicaciones: {e}")
         vehicles = []
@@ -66,7 +75,7 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, m
     
     all_extracted_items = []
     for i, v_data in enumerate(vehicles, 1):
-        logger.info(f"🖱️ Procesando vehículo #{i}...")
+        notify(f"🖱️ Procesando vehículo #{i} de {len(vehicles)}...")
         listing_title = v_data.get("title", "")
         listing_year = v_data.get("year", "")
         listing_km = v_data.get("km", "")
@@ -77,6 +86,7 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, m
                 client_sync.sessions.navigate(id=sess_id, url=results_url) # Vuelve a la lista filtrada
                 time.sleep(2)
 
+                notify(f"🔍 Abriendo detalle del vehículo #{i}...")
                 client_sync.sessions.execute(
                     id=sess_id,
                     execute_options={
@@ -107,7 +117,7 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, m
                 if item:
                     detail_year = item.get("year", "")
                     detail_km = item.get("km", "")
-                    logger.info(f"📄 Detalle: {detail_year} | {detail_km}")
+                    notify(f"📄 Detalle: {detail_year} | {detail_km}")
 
                     # Validación de Encabezado, Año y KM
                     def norm(s): return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
@@ -122,6 +132,7 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, m
                         success = True
                         break
                     else:
+                        notify(f"⚠️ Datos no coinciden en vehículo #{i} (Intento {attempt+1}).")
                         logger.warning(f"⚠️ Desajuste de datos detectado en intento {attempt+1}. Reintentando...")
             except Exception as e:
                 logger.error(f"⚠️ Error en intento {attempt+1} para vehículo {i}: {e}")
@@ -136,6 +147,7 @@ def main() -> None:
     logger = logging.getLogger(__name__)
 
     results_url = "https://www.kavak.com/ar/usados?maker=toyota&model=corolla&status=disponible&year=2021&order=relevance"
+    target_version = "1.8 SE-G CVT L17"
     max_publications = 5  # Límite de publicaciones a extraer
 
     #results_url = "https://autos.mercadolibre.com.ar/toyota/corolla/2021/_ITEM*CONDITION_2230581#applied_filter_id%3DVEHICLE_YEAR%26applied_filter_name%3DA%C3%B1o%26applied_filter_order%3D8%26applied_value_id%3D%5B2021-2021%5D%26applied_value_name%3D2021%26applied_value_order%3D6%26applied_value_results%3D136%26is_custom%3Dfalse"
@@ -178,7 +190,7 @@ def main() -> None:
     time.sleep(5) # Espera aumentada para asegurar que el DOM esté completamente cargado
 
     # Llamada a la función modularizada para pruebas
-    results = extract_kavak_details(client_sync, sess_id, results_url, max_publications, model_name)
+    results = extract_kavak_details(client_sync, sess_id, results_url, max_publications, target_version, model_name)
     for i, res in enumerate(results, 1):
         print(f"✅ Datos vehículo {i}: {res}")
 

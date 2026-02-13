@@ -111,19 +111,26 @@ if scrape_btn:
             }
             
             try:
-                # 2. Comunicación con la API
-                # AUMENTO DE TIMEOUT: Stagehand realiza muchos pasos y la IA de Gemini 2.0 
-                # puede tardar en razonar cada uno. Subimos a 10 minutos para dar margen total.
-                response = httpx.post(
-                    f"{BACKEND_URL}/scrape", 
-                    json=payload, 
-                    timeout=600.0 # 10 minutos en segundos
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    
-                    if result.get("status") == "success":
+                # Usamos httpx.stream para recibir actualizaciones en tiempo real
+                with httpx.stream("POST", f"{BACKEND_URL}/scrape", json=payload, timeout=600.0) as response:
+                    if response.status_code != 200:
+                        st.error(f"Error del servidor: {response.status_code}")
+                        st.stop()
+
+                    # Contenedor para los mensajes de progreso
+                    with st.status("Ejecutando proceso de IA...", expanded=True) as status_container:
+                        result = None
+                        for line in response.iter_lines():
+                            if not line: continue
+                            event = json.loads(line)
+                            
+                            if event["type"] == "status":
+                                st.write(event["message"])
+                            elif event["type"] == "final":
+                                result = event
+                                status_container.update(label="✅ Proceso finalizado", state="complete", expanded=True)
+
+                    if result and result.get("status") == "success":
                         status_placeholder.success(f"✅ Scraping completado! {result['message']}")
                         
                         # 4. Tablas y Gráficos
@@ -139,7 +146,23 @@ if scrape_btn:
                             df['Precio'] = df.apply(display_price, axis=1)
                             
                             st.subheader("Resultados Extraídos")
-                            st.dataframe(df[['title', 'year', 'km', 'Precio', 'zona', 'url']], use_container_width=True)
+                            
+                            # Preparar DataFrame para visualización con nuevas columnas y formato
+                            df_display = df[['brand', 'model', 'version', 'year', 'km', 'Precio', 'zona', 'reservado', 'site', 'url']].copy()
+                            df_display.columns = ['Marca', 'Modelo', 'Versión', 'Año', 'KM', 'Precio', 'Zona', 'Reservado', 'Sitio', 'Link']
+                            df_display['Reservado'] = df_display['Reservado'].apply(lambda x: "✅" if x else "❌")
+
+                            st.dataframe(
+                                df_display,
+                                use_container_width=True,
+                                column_config={
+                                    "Link": st.column_config.LinkColumn(
+                                        "Link",
+                                        display_text="🔗"
+                                    )
+                                },
+                                hide_index=True
+                            )
                             
                             st.divider()
                             c1, c2 = st.columns(2)
@@ -147,17 +170,33 @@ if scrape_btn:
                                 st.metric(label="Precio Promedio", value=f"${result['stats']['average_price']:,.2f} ARS")
                             with c2:
                                 st.metric(label="Vehículos Encontrados", value=len(df))
+                            
+                            # 5. Mostrar Stock Actualizado
+                            if "updated_stock" in result and result["updated_stock"]:
+                                st.divider()
+                                st.subheader("📈 Stock Actualizado en Base de Datos")
+                                df_updated = pd.DataFrame(result["updated_stock"])
+                                
+                                # Formatear para visualización
+                                for col_pct in ['margen_hist_costo_pm', 'margen_idx_costo_pm', 'dif_pv_co_kavak']:
+                                    if col_pct in df_updated.columns:
+                                        df_updated[col_pct] = df_updated[col_pct].apply(lambda x: f"{x:.2%}" if pd.notnull(x) else "N/A")
+                                
+                                for col_price in ['precio_venta', 'precio_toma', 'pm', 'meli', 'kavak']:
+                                    if col_price in df_updated.columns:
+                                        df_updated[col_price] = df_updated[col_price].apply(lambda x: f"${x:,.2f}" if pd.notnull(x) else "N/A")
 
-                            st.subheader("Distribución de Precios")
-                            st.line_chart(df.sort_values("year").set_index("year")["price"])
+                                cols_to_show = ['patente', 'marca', 'modelo', 'anio', 'km', 'precio_venta', 'meli', 'kavak', 'pm', 'margen_hist_costo_pm', 'margen_idx_costo_pm', 'cuenta']
+                                existing_cols = [c for c in cols_to_show if c in df_updated.columns]
+                                st.dataframe(df_updated[existing_cols], use_container_width=True)
                         else:
                             st.warning("El scraping terminó pero no se extrajeron vehículos válidos.")
-                    else:
+                    elif result:
                         st.error(f"Error en el scraping: {result.get('message')}")
                         if "data" in result:
                             st.json(result["data"])
-                else:
-                    st.error(f"Error del servidor (Código {response.status_code}): {response.text}")
+                    else:
+                        st.error("No se recibió una respuesta final del servidor.")
                     
             except httpx.ReadTimeout:
                 st.error("⏳ Error: La solicitud tardó demasiado (Timeout). El backend sigue trabajando, pero la conexión se cerró.")
