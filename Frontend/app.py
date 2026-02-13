@@ -23,6 +23,7 @@ with st.sidebar:
     api_key = st.text_input("API Key (Gemini/Ollama)", type="password")
     model_provider = st.selectbox("Proveedor de IA", ["gemini", "ollama"])
     base_url = st.text_input("Base URL (Ollama)", value="http://localhost:11434")
+    show_browser = st.checkbox("Mostrar navegador local", value=True)
     
     st.divider()
     st.info(f"Conectado al Backend en: {BACKEND_URL}")
@@ -105,7 +106,8 @@ if scrape_btn:
                 "patente": default_patente,
                 "version": version,
                 "km_max": km_max,
-                "api_key": api_key
+                "api_key": api_key,
+                "headless": not show_browser
             }
             
             try:
@@ -128,8 +130,16 @@ if scrape_btn:
                         if "data" in result and result["data"]:
                             df = pd.DataFrame(result["data"])
                             
+                            # Formateo de precio para visualización con conversión
+                            def display_price(row):
+                                if row['currency'] == 'USD':
+                                    return f"USD {row['price']:,.0f} (≈ ${row['price_ars']:,.0f} ARS)"
+                                return f"${row['price']:,.0f} ARS"
+                            
+                            df['Precio'] = df.apply(display_price, axis=1)
+                            
                             st.subheader("Resultados Extraídos")
-                            st.dataframe(df, use_container_width=True)
+                            st.dataframe(df[['title', 'year', 'km', 'Precio', 'zona', 'url']], use_container_width=True)
                             
                             st.divider()
                             c1, c2 = st.columns(2)

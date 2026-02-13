@@ -8,6 +8,7 @@ import pandas as pd
 from urllib.parse import urlparse, urljoin
 import uvicorn
 import time
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -49,6 +50,7 @@ class ScrapeRequest(BaseModel):
     km_max: int
     api_key: str
     patente: str = None
+    headless: bool = False
 
 def get_db_connection():
     return psycopg2.connect(
@@ -57,6 +59,62 @@ def get_db_connection():
         user=os.getenv("DB_USER", "postgres"),
         password=os.getenv("DB_PASS", "password")
     )
+
+def get_latest_dollar_from_db():
+    """Recupera el último valor del dólar guardado en la base de datos."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT venta FROM dolar_value WHERE casa = 'oficial' ORDER BY fecha_carga DESC LIMIT 1")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return float(row[0]) if row else None
+    except Exception as e:
+        logger.error(f"❌ Error obteniendo dólar de DB: {e}")
+        return None
+
+def save_dollars_to_db(dollar_list):
+    """Guarda todos los tipos de dólar en la tabla dolar_value."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        insert_query = """
+            INSERT INTO dolar_value (casa, nombre, compra, venta, fecha_actualizacion)
+            VALUES %s
+        """
+        values = [
+            (d.get('casa'), d.get('nombre'), d.get('compra'), d.get('venta'), d.get('fechaActualizacion'))
+            for d in dollar_list
+        ]
+        execute_values(cur, insert_query, values)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ Error guardando dólar en DB: {e}")
+
+async def get_exchange_rate():
+    """Obtiene el valor del dólar oficial (venta) desde la API o el último guardado en DB."""
+    url = "https://dolarapi.com/v1/dolares"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                # Guardamos todos los tipos de dólar recibidos para historial
+                save_dollars_to_db(data)
+                
+                oficial = next((d for d in data if d.get('casa') == 'oficial'), None)
+                if oficial:
+                    return float(oficial.get("venta"))
+        raise Exception("Falla en la respuesta de la API")
+    except Exception as e:
+        logger.error(f"⚠️ Error API Dólar: {e}. Buscando respaldo en DB...")
+        valor_db = get_latest_dollar_from_db()
+        if valor_db: return valor_db
+        logger.error("🚨 Sin respaldo de dólar. Usando 1.0 como fallback.")
+        return 1.0
 
 def save_to_db(extracted_data, stats, domain, request_data):
     """Persiste los datos en PostgreSQL: tabla transaccional y tabla de resultados."""
@@ -108,26 +166,35 @@ def get_full_navigation_instruction(domain: str, brand: str, model: str, year: i
     """
     Genera la instrucción completa y robusta para el agente de IA.
     """
-    base_instr = (
-        "1. Si aparece un cartel de cookies o selección de país/región, acéptalo o ciérralo.\n"
-        "2. Asegúrate de estar en la sección de compra de autos o categoria de Vehiculos (Marketplace). Si estás en la home, busca el botón 'Comprar un auto', Categoria 'Vehiculos' o similar.\n"
-        "3. Verificar si se observan los filtros de búsqueda, en caso de que no se hallen hacer clic en la barra de búsqueda (entry point) para ver filtros si corresponde CASO CONTRARIO NO HACER NADA.\n"
-        "REGLA CRÍTICA: Si no encuentras el valor exacto solicitado para CUALQUIERA de los filtros (Marca, Modelo, Año, Disponibilidad, KM, etc.), DETÉN el proceso inmediatamente. No intentes seleccionar valores similares ni continúes con el resto de los pasos.\n"
-    )
+    base_instr = ""
     
     if "kavak" in domain:
         return base_instr + (
+            "1. Si aparece un cartel de cookies o selección de país/región, acéptalo o ciérralo.\n"
+            "2. Asegúrate de estar en la sección de compra de autos o categoria de Vehiculos (Marketplace). Si estás en la home, busca el botón 'Comprar un auto', Categoria 'Vehiculos' o similar.\n"
+            "3. Verificar si se observan los filtros de búsqueda, en caso de que no se hallen hacer clic en la barra de búsqueda (entry point) para ver filtros si corresponde CASO CONTRARIO NO HACER NADA.\n"
+            "REGLA CRÍTICA: Si no encuentras el valor exacto solicitado para CUALQUIERA de los filtros (Marca, Modelo, etc.), DETÉN el proceso inmediatamente. No intentes seleccionar valores similares ni continúes con el resto de los pasos.\n"
             f"4. Aplica los filtros: Marca (puede tener otros nombres considerar todas las variantes posibles): '{brand}', Modelo (puede tener otros nombres considerar todas las variantes posibles): '{model}', Año (puede tener otros nombres considerar todas las variantes posibles): '{year}' y Disponibilidad de auto (puede tener otros nombres considerar todas las variantes posibles): 'Disponible' (o similar). Los filtros pueden aparecer como botones, enlaces o listas desplegables. Busca específicamente el botón o enlace con el texto '{year}'. Si no lo ves, expande la sección correspondiente o busca un botón de 'Ver más'.\n"
             "6. Ordenar las publicaciones por 'Relevancia'.\n"
             "7. Haz scroll para cargar los resultados."
         )
     elif "mercadolibre" in domain:
         return base_instr + (
-            f"4. Analiza la página para localizar los botones o menús de filtrado de 'Marca' y 'Modelo'. Haz clic en ellos y selecciona '{brand}' y '{model}' respectivamente y si se especifica que deben ser autos 'USADOS'.\n"
-            f"5. Una vez aplicados los filtros anteriores, busca el filtro de 'Año' en la barra lateral o lista de opciones y selecciona el año '{year}'.\n"
-            "6. Busca el filtro de 'Condición' en la barra lateral y selecciona 'Usados' para filtrar los resultados si ya esta filtrado por Usados, NO HACER NADA.\n"
-            "7. Haz scroll para cargar las publicaciones.\n"
-        )
+                f"""OBJETIVO: Encontrar un vehículo {brand} {model} usado del año {year}, evitando accesorios o repuestos.
+
+                PASOS:
+                1. BÚSQUEDA INICIAL: Localiza el buscador principal en la parte superior (header) y escribe '{brand} {model}'. Presiona Enter o haz clic en la lupa para buscar.
+
+                2. FILTRO DE CONDICIÓN: En la barra lateral, busca la sección de 'Condición' y selecciona específicamente 'Usado'.
+
+                3. FILTRO DE AÑO: Busca la sección 'Año' en los filtros laterales.
+                - Selecciona exactamente el año '{year}'. 
+                - Si no ves el año '{year}' en la lista, haz clic en 'Mostrar más' o 'Ver todos' dentro de esa sección hasta encontrarlo.
+
+                4. VERIFICACIÓN FINAL: 
+                - Si aparece un mensaje de 'No hay publicaciones que coincidan', informa 'Sin stock'.
+                - Si hay resultados, realiza un scroll suave para asegurar que se carguen las unidades y confirma que el catálogo sea de vehículos reales.
+                """      )
     else:
         return base_instr + f"4. Busca y filtra por Marca '{brand}', Modelo '{model}' y Año '{year}'.\n5. Haz scroll para cargar resultados."
 
@@ -152,9 +219,13 @@ async def scrape_cars(request: ScrapeRequest):
     if Stagehand is None:
         raise HTTPException(status_code=500, detail="Stagehand SDK no encontrado.")
 
+    # Obtener tipo de cambio para cálculos de mercado
+    exchange_rate = await get_exchange_rate()
+    logger.info(f"💵 Tipo de cambio aplicado: {exchange_rate} ARS/USD")
+
     os.environ["MODEL_API_KEY"] = request.api_key
     os.environ["GEMINI_API_KEY"] = request.api_key
-    model_name = "google/gemini-2.5-flash" 
+    model_name = "google/gemini-2.5-flash"  # Modelo optimizado para tareas de navegación y extracción con contexto amplio
     
     extracted_data = []
     
@@ -168,14 +239,14 @@ async def scrape_cars(request: ScrapeRequest):
             client_sync = Stagehand(
                 server="local",
                 model_api_key=request.api_key,
-                local_headless=False,
+                local_headless=request.headless,
                 local_ready_timeout_s=20.0, 
                 timeout=300.0
             )
             
             session = client_sync.sessions.start(
                 model_name=model_name,
-                browser={"type": "local", "launchOptions": {"headless": False}},
+                browser={"type": "local", "launchOptions": {"headless": request.headless}},
             )
             sess_id = session.data.session_id
             
@@ -183,12 +254,12 @@ async def scrape_cars(request: ScrapeRequest):
 
             instruction = get_full_navigation_instruction(domain, request.brand, request.model, request.year)
             
-            logger.info("🤖 Agente IA ejecutando navegación y filtrado...")
+            logger.info(f"🤖 Agente IA ejecutando navegación y filtrado con esta instrucción: {instruction}")
             client_sync.sessions.execute(
                 id=sess_id,
                 execute_options={
                     "instruction": instruction,
-                    "max_steps": 15,
+                    "max_steps": 20,
                 },
                 agent_config={"model": {"model_name": model_name}},
             )
@@ -214,7 +285,7 @@ async def scrape_cars(request: ScrapeRequest):
                 schema={"type": "object", "properties": {"url": {"type": "string","format": "uri"}}}
             )
             current_url = url_res.data.result.get("url", request.url)
-            logger.info(f"✅ Resultados confirmados. Continuando scraping desde: {current_url}")
+            logger.info(f"✅ Resultados confirmados. Continuando scraping desde: {url_res}")
 
             # --- EXTRACCIÓN DETALLADA (Navegando a cada publicación) ---
             logger.info("💎 Iniciando extracción detallada modularizada...")
@@ -279,6 +350,11 @@ async def scrape_cars(request: ScrapeRequest):
                             except: return 0.0
 
                         price = clean_num(item.get('precio', item.get('price', item.get('precio_contado', 0))))
+                        currency = str(item.get('moneda', item.get('currency', 'ARS'))).upper()
+                        
+                        # Calculamos el valor en ARS para estadísticas, pero mantenemos el original para la BD
+                        price_ars = price * exchange_rate if currency == 'USD' else price
+
                         km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
                         year = int(clean_num(item.get('año', item.get('year', request.year))))
 
@@ -294,7 +370,8 @@ async def scrape_cars(request: ScrapeRequest):
                             "year": year, 
                             "km": km, 
                             "price": price,
-                            "currency": str(item.get('moneda', item.get('currency', 'ARS'))).upper(),
+                            "currency": currency,
+                            "price_ars": price_ars,
                             "title": str(item.get('titulo', item.get('title', 'N/A'))),
                             "combustible": str(item.get('combustible', 'N/A')),
                             "transmision": str(item.get('transmision', 'N/A')),
@@ -328,7 +405,7 @@ async def scrape_cars(request: ScrapeRequest):
             with open(DATA_FILE, "w") as f: json.dump(all_data, f, indent=4)
             
             res_stats = {
-                "average_price": df[df['price'] > 0]['price'].mean() if not df[df['price'] > 0].empty else 0, 
+                "average_price": float(df[df['price_ars'] > 0]['price_ars'].mean()) if not df[df['price_ars'] > 0].empty else 0.0, 
                 "count": len(df)
             }
 

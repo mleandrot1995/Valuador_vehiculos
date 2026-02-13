@@ -51,13 +51,24 @@ CREATE TABLE IF NOT EXISTS stock_comparison (
     cuenta NUMERIC
 );
 
+-- 3. Histórico de Tipo de Cambio
+CREATE TABLE IF NOT EXISTS dolar_value (
+    id SERIAL PRIMARY KEY,
+    casa VARCHAR(50),
+    nombre VARCHAR(100),
+    compra NUMERIC,
+    venta NUMERIC,
+    fecha_actualizacion TIMESTAMP WITH TIME ZONE,
+    fecha_carga TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Índices para optimizar búsquedas
 CREATE INDEX IF NOT EXISTS idx_stock_lookup ON stock_comparison (marca, anio, modelo);
 
 -- Precarga de Stock Inicial
 BEGIN;
 
-INSERT INTO   (patente, marca, modelo, anio, km, precio_venta, precio_toma, index_val, kavak, tienda_cars, motor_max, auto_city, randazzo, pm, ml) VALUES 
+INSERT INTO stock_comparison (patente, marca, modelo, anio, km, precio_venta, precio_toma, index_val, kavak, tienda_cars, motor_max, auto_city, randazzo, pm, ml) VALUES 
 ('AE732XD', 'FORD', 'KA - 1.5 S L18', 2021, 51867, NULL, 15000000, 0.096800, NULL, NULL, NULL, NULL, 15390000.0, 26860000.0, 45582231.0),
 ('LNM572', 'CHEVROLET', 'CELTA - 1.4 LT 5P L11', 2012, 98113, 6830000.0, 6000000, 0.096800, NULL, NULL, NULL, NULL, NULL, 13460000.0, 18900116.0),
 ('AD399YN', 'VOLKSWAGEN', 'SURAN - 1.6 TRACK L17', 2019, 87859, NULL, 14100000, 0.096800, 21293333.0, NULL, NULL, NULL, NULL, 21290000.0, NULL),
