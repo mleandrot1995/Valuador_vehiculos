@@ -82,7 +82,7 @@ with col1:
     
     default_patente = str(selected_car['patente'])
 
-    target_url = st.text_input("URL Objetivo", value="https://www.kavak.com/ar")
+    selected_sites = st.multiselect("Sitios a scrapear", ["Kavak", "Mercado Libre"], default=["Kavak", "Mercado Libre"])
     km_max = st.number_input("KM Máximo", min_value=0, step=5000, value=50000)
     
     scrape_btn = st.button("Iniciar Scraping", type="primary")
@@ -92,14 +92,14 @@ status_placeholder = st.empty()
 
 # Lógica principal
 if scrape_btn:
-    if not api_key:
-        st.warning("Por favor ingrese una API Key.")
+    if not api_key or not selected_sites:
+        st.warning("Por favor ingrese una API Key y seleccione al menos un sitio.")
     else:
         with st.spinner("El proceso de IA puede tardar varios minutos (Navegación + Filtrado + Extracción)..."):
             status_placeholder.info("🚀 Conectando con el backend y lanzando agente IA...")
             
             payload = {
-                "url": target_url,
+                "sites": selected_sites,
                 "brand": brand,
                 "model": model,
                 "year": year,

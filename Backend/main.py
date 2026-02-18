@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import logging
+from typing import List
 import json
 import os
 import re
@@ -43,8 +44,13 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 DATA_FILE = os.path.abspath(os.path.join("data", "publicaciones.json"))
 MAP_FILE = os.path.abspath(os.path.join("data", "navigation_map.json"))
 
+SITE_URLS = {
+    "kavak": "https://www.kavak.com/ar",
+    "mercadolibre": "https://www.mercadolibre.com.ar/"
+}
+
 class ScrapeRequest(BaseModel):
-    url: str
+    sites: List[str]
     brand: str
     model: str
     year: int
@@ -306,13 +312,13 @@ async def scrape_cars(request: ScrapeRequest):
         exchange_rate = await get_exchange_rate()
         log_status(f"✅ Tipo de cambio: {exchange_rate} ARS/USD")
 
-        def run_stagehand_logic(progress_callback):
+        def run_site_scraping(site_name, target_url, progress_callback):
             # Extraer el dominio dinámicamente de la URL solicitada
-            parsed_url = urlparse(request.url)
-            domain = parsed_url.netloc.replace("www.", "")
+            parsed_url = urlparse(target_url)
+            domain = site_name
             
             # --- NAVEGACIÓN ASISTIDA POR IA (Stagehand) ---
-            progress_callback(f"🌐 Iniciando navegador local en modo {'oculto' if request.headless else 'visible'}...")
+            progress_callback(f"🌐 [{site_name.upper()}] Iniciando navegador local...")
             client_sync = Stagehand(
                 server="local",
                 model_api_key=request.api_key,
@@ -327,11 +333,11 @@ async def scrape_cars(request: ScrapeRequest):
             )
             sess_id = session.data.session_id
             
-            client_sync.sessions.navigate(id=sess_id, url=request.url)
+            client_sync.sessions.navigate(id=sess_id, url=target_url)
 
             instruction = get_full_navigation_instruction(domain, request.brand, request.model, request.year)
             
-            progress_callback(f"🤖 Agente IA navegando en {domain}...")
+            progress_callback(f"🤖 [{site_name.upper()}] Agente IA navegando...")
             client_sync.sessions.execute(
                 id=sess_id,
                 execute_options={
@@ -342,7 +348,7 @@ async def scrape_cars(request: ScrapeRequest):
             )
 
             # Verificación rápida de resultados para detener el proceso si no hay nada
-            progress_callback("🧐 Verificando si existen resultados de búsqueda...")
+            progress_callback(f"🧐 [{site_name.upper()}] Verificando resultados...")
             check_result = client_sync.sessions.extract(
                 id=sess_id,
                 instruction=f"Analiza la página actual. ¿Se aplicaron correctamente los filtros de Marca (puede tener otros nombres considerar todas las variantes posibles): '{request.brand}', Modelo  (puede tener otros nombres considerar todas las variantes posibles): '{request.model}' y Año  (puede tener otros nombres considerar todas las variantes posibles): '{request.year}'? ¿La página muestra resultados que coinciden con estos filtros, o muestra un mensaje de '0 resultados' o 'No se encontraron vehículos'? Responde false si los filtros no se aplicaron correctamente o si no hay resultados que coincidan con la búsqueda.",
@@ -350,7 +356,7 @@ async def scrape_cars(request: ScrapeRequest):
             )
             
             if not check_result.data.result.get("has_results", False):
-                progress_callback("❌ No se encontraron resultados para los filtros aplicados. Deteniendo proceso.")
+                progress_callback(f"❌ [{site_name.upper()}] Sin resultados.")
                 client_sync.sessions.end(id=sess_id)
                 client_sync.close()
                 return "NO_RESULTS"
@@ -361,123 +367,98 @@ async def scrape_cars(request: ScrapeRequest):
                 instruction="Obtén la URL actual de la página.",
                 schema={"type": "object", "properties": {"url": {"type": "string","format": "uri"}}}
             )
-            current_url = url_res.data.result.get("url", request.url)
-            progress_callback("✅ Resultados confirmados. Iniciando extracción detallada...")
+            current_url = url_res.data.result.get("url", target_url)
+            progress_callback(f"✅ [{site_name.upper()}] Resultados confirmados. Extrayendo...")
 
             # --- EXTRACCIÓN DETALLADA (Navegando a cada publicación) ---
             all_extracted_items = []
             max_pubs = 5  # Límite heredado a los módulos
             
-            if "kavak" in domain:
+            if "kavak" in site_name:
                 kavak_module = load_scraper_module("prueba scrap kavak.py")
                 all_extracted_items = kavak_module.extract_kavak_details(
-                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, progress_callback=progress_callback
+                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, progress_callback=lambda m: progress_callback(f"[{site_name.upper()}] {m}")
                 )
-            elif "mercadolibre" in domain:
+            elif "mercadolibre" in site_name:
                 meli_module = load_scraper_module("prueba scrap meli.py")
                 all_extracted_items = meli_module.extract_meli_details(
-                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, progress_callback=progress_callback
+                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, progress_callback=lambda m: progress_callback(f"[{site_name.upper()}] {m}")
                 )
             else:
-                progress_callback(f"⚠️ El sitio {domain} no está soportado para extracción detallada.")
-                logger.warning(f"⚠️ Dominio {domain} no soportado.")
+                progress_callback(f"⚠️ [{site_name.upper()}] No soportado.")
 
             client_sync.sessions.end(id=sess_id)
             client_sync.close()
 
             if not all_extracted_items:
-                progress_callback("⚠️ No se extrajeron publicaciones válidas después de filtrar.")
+                progress_callback(f"⚠️ [{site_name.upper()}] No se extrajeron publicaciones.")
 
-            return {"autos": all_extracted_items}
+            return {"site": site_name, "autos": all_extracted_items}
 
         try:
-            # Ejecutar lógica en hilo y capturar mensajes
-            task = asyncio.create_task(asyncio.to_thread(run_stagehand_logic, log_status))
+            # Ejecutar lógica en paralelo para ambos sitios
+            tasks = []
+            for site_key in request.sites:
+                site_key_lower = site_key.lower().replace(" ", "")
+                if site_key_lower in SITE_URLS:
+                    tasks.append(asyncio.create_task(asyncio.to_thread(run_site_scraping, site_key_lower, SITE_URLS[site_key_lower], log_status)))
             
-            while not task.done() or not queue.empty():
+            # Monitorear la cola de mensajes mientras las tareas corren
+            while any(not t.done() for t in tasks) or not queue.empty():
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=0.1)
                     yield json.dumps(msg) + "\n"
                 except asyncio.TimeoutError:
                     continue
 
-            raw_results = await task
+            # Recopilar resultados de todas las tareas
+            all_site_results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            if raw_results == "NO_RESULTS":
-                log_status("⚠️ No se hallaron resultados que coincidan con los criterios de búsqueda.")
-                yield json.dumps({"type": "final", "status": "empty", "message": "No se hallaron valores."}) + "\n"
-                return
-
-            # PROCESAMIENTO RÁPIDO Y ROBUSTO
-            log_status("📊 Procesando datos extraídos y calculando estadísticas...")
-            items = []
-            if isinstance(raw_results, str):
-                clean_json = raw_results
-                if "```json" in clean_json:
-                    clean_json = clean_json.split("```json")[1].split("```")[0]
-                elif "```" in clean_json:
-                    clean_json = clean_json.split("```")[1].split("```")[0]
-                items = json.loads(clean_json.strip())
-            else:
-                items = raw_results
-
-            # Extraer lista del objeto Schema
-            if isinstance(items, dict) and 'autos' in items:
-                items = items['autos']
-            elif isinstance(items, dict):
-                # Fallback por si la IA ignoró el nombre de la llave del schema
-                for key in ['autos', 'cars', 'results', 'data']:
-                    if key in items and isinstance(items[key], list):
-                        items = items[key]
-                        break
-                if isinstance(items, dict): items = [items]
+            log_status("📊 Procesando datos extraídos de todos los sitios...")
             
-            if isinstance(items, list):
-                log_status(f"📝 Limpiando y formateando {len(items)} publicaciones halladas...")
-                for item in items:
-                    try:
-                        def clean_num(v):
-                            if v is None: return 0.0
-                            s = "".join(c for c in str(v).replace(',', '.') if c.isdigit() or c == '.')
-                            try:
-                                return float(s) if s else 0.0
-                            except: return 0.0
+            for raw_results in all_site_results:
+                if isinstance(raw_results, Exception):
+                    logger.error(f"❌ Error en tarea de scraping: {raw_results}")
+                    continue
+                
+                if raw_results == "NO_RESULTS": continue
 
-                        price = clean_num(item.get('precio', item.get('price', item.get('precio_contado', 0))))
-                        currency = str(item.get('moneda', item.get('currency', 'ARS'))).upper()
-                        
-                        # Calculamos el valor en ARS para estadísticas, pero mantenemos el original para la BD
-                        price_ars = price * exchange_rate if currency == 'USD' else price
+                items = raw_results.get("autos", [])
+                site_name = raw_results.get("site", "Desconocido")
+                
+                if items:
+                    log_status(f"📝 Procesando {len(items)} publicaciones de {site_name}...")
+                    for item in items:
+                        try:
+                            def clean_num(v):
+                                if v is None: return 0.0
+                                s = "".join(c for c in str(v).replace(',', '.') if c.isdigit() or c == '.')
+                                try:
+                                    return float(s) if s else 0.0
+                                except: return 0.0
 
-                        km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
-                        year = int(clean_num(item.get('año', item.get('year', request.year))))
+                            price = clean_num(item.get('precio', item.get('price', item.get('precio_contado', 0))))
+                            currency = str(item.get('moneda', item.get('currency', 'ARS'))).upper()
+                            price_ars = price * exchange_rate if currency == 'USD' else price
+                            km = int(clean_num(item.get('km', item.get('kilometraje', 0))))
+                            year = int(clean_num(item.get('año', item.get('year', request.year))))
+                            raw_link = str(item.get('link', item.get('url', '')))
+                            full_link = urljoin(SITE_URLS.get(site_name, ""), raw_link)
 
-                        # Reconstrucción de link
-                        raw_link = str(item.get('link', item.get('url', '')))
-                        
-                        full_link = urljoin("https://www.kavak.com", raw_link) if "kavak" in request.url else urljoin(request.url, raw_link)
-
-                        site_name = "Kavak" if "kavak" in request.url else "Mercado Libre"
-
-                        extracted_data.append({
-                            "brand": str(item.get('marca', item.get('brand', request.brand))),
-                            "model": str(item.get('modelo', item.get('model', request.model))),
-                            "version": str(item.get('version', 'N/A')),
-                            "year": year, 
-                            "km": km, 
-                            "price": price,
-                            "currency": currency,
-                            "price_ars": price_ars,
-                            "title": str(item.get('titulo', item.get('title', 'N/A'))),
-                            "combustible": str(item.get('combustible', 'N/A')),
-                            "transmision": str(item.get('transmision', 'N/A')),
-                            "zona": str(item.get('zona', item.get('ubicacion', 'N/A'))),
-                            "fecha_publicacion": str(item.get('fecha_publicacion', 'N/A')),
-                            "reservado": bool(item.get('reservado', False)),
-                            "url": full_link,
-                            "site": site_name
-                        })
-                    except: continue
+                            extracted_data.append({
+                                "brand": str(item.get('marca', item.get('brand', request.brand))),
+                                "model": str(item.get('modelo', item.get('model', request.model))),
+                                "version": str(item.get('version', 'N/A')),
+                                "year": year, "km": km, "price": price, "currency": currency,
+                                "price_ars": price_ars, "title": str(item.get('titulo', item.get('title', 'N/A'))),
+                                "combustible": str(item.get('combustible', 'N/A')),
+                                "transmision": str(item.get('transmision', 'N/A')),
+                                "zona": str(item.get('zona', item.get('ubicacion', 'N/A'))),
+                                "fecha_publicacion": str(item.get('fecha_publicacion', 'N/A')),
+                                "reservado": bool(item.get('reservado', False)),
+                                "url": full_link, "site": site_name.capitalize()
+                            })
+                        except: continue
 
             # Respuesta Final
             if extracted_data:
@@ -498,10 +479,19 @@ async def scrape_cars(request: ScrapeRequest):
                         "count": len(df)
                     }
 
-                    # Persistencia en DB
-                    parsed_url = urlparse(request.url)
-                    domain = parsed_url.netloc.replace("www.", "")
-                    updated_stock = save_to_db(extracted_data, res_stats, domain, request, progress_callback=log_status)
+                    # Persistencia en DB por sitio para actualizar columnas específicas
+                    updated_stock = []
+                    for site_key in request.sites:
+                        site_norm = site_key.lower().replace(" ", "")
+                        site_data = [d for d in extracted_data if d['site'].lower() == site_norm]
+                        if site_data:
+                            site_df = pd.DataFrame(site_data)
+                            site_stats = {
+                                "average_price": float(site_df[site_df['price_ars'] > 0]['price_ars'].mean()),
+                                "count": len(site_df)
+                            }
+                            updated_stock = save_to_db(site_data, site_stats, site_norm, request, progress_callback=log_status)
+                    
                     log_status("✨ Proceso de guardado y análisis finalizado correctamente.")
 
                     # Helper para serializar Decimals de la base de datos
