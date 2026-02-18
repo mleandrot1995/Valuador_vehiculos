@@ -135,60 +135,121 @@ if scrape_btn:
                         
                         # 4. Tablas y Gráficos
                         if "data" in result and result["data"]:
-                            df = pd.DataFrame(result["data"])
+                            tab1, tab2 = st.tabs(["🔍 Resultados de Scraping", "📈 Resultados"])
                             
-                            # Formateo de precio para visualización con conversión
-                            def display_price(row):
-                                if row['currency'] == 'USD':
-                                    return f"USD {row['price']:,.0f} (≈ ${row['price_ars']:,.0f} ARS)"
-                                return f"${row['price']:,.0f} ARS"
-                            
-                            df['Precio'] = df.apply(display_price, axis=1)
-                            
-                            st.subheader("Resultados Extraídos")
-                            
-                            # Preparar DataFrame para visualización con nuevas columnas y formato
-                            df_display = df[['brand', 'model', 'version', 'year', 'km', 'Precio', 'zona', 'reservado', 'site', 'url']].copy()
-                            df_display.columns = ['Marca', 'Modelo', 'Versión', 'Año', 'KM', 'Precio', 'Zona', 'Reservado', 'Sitio', 'Link']
-                            df_display['Reservado'] = df_display['Reservado'].apply(lambda x: "✅" if x else "❌")
+                            with tab1:
+                                df = pd.DataFrame(result["data"])
+                                
+                                # Formateo de precio para visualización con conversión
+                                def display_price(row):
+                                    if row['currency'] == 'USD':
+                                        return f"USD {row['price']:,.0f} (≈ ${row['price_ars']:,.0f} ARS)"
+                                    return f"${row['price']:,.0f} ARS"
+                                
+                                df['Precio'] = df.apply(display_price, axis=1)
+                                
+                                st.subheader("Publicaciones Encontradas")
+                                
+                                # Preparar DataFrame para visualización
+                                df_display = df[['brand', 'model', 'version', 'year', 'km', 'Precio', 'zona', 'reservado', 'site', 'url']].copy()
+                                df_display.columns = ['Marca', 'Modelo', 'Versión', 'Año', 'KM', 'Precio', 'Zona', 'Reservado', 'Sitio', 'Link']
+                                df_display['Reservado'] = df_display['Reservado'].apply(lambda x: "✅" if x else "❌")
 
-                            st.dataframe(
-                                df_display,
-                                use_container_width=True,
-                                column_config={
-                                    "Link": st.column_config.LinkColumn(
-                                        "Link",
-                                        display_text="🔗"
-                                    )
-                                },
-                                hide_index=True
-                            )
-                            
-                            st.divider()
-                            c1, c2 = st.columns(2)
-                            with c1:
-                                st.metric(label="Precio Promedio", value=f"${result['stats']['average_price']:,.2f} ARS")
-                            with c2:
-                                st.metric(label="Vehículos Encontrados", value=len(df))
-                            
-                            # 5. Mostrar Stock Actualizado
-                            if "updated_stock" in result and result["updated_stock"]:
+                                st.dataframe(
+                                    df_display,
+                                    use_container_width=True,
+                                    column_config={
+                                        "Link": st.column_config.LinkColumn("Link", display_text="🔗")
+                                    },
+                                    hide_index=True
+                                )
+                                
                                 st.divider()
-                                st.subheader("📈 Stock Actualizado en Base de Datos")
-                                df_updated = pd.DataFrame(result["updated_stock"])
-                                
-                                # Formatear para visualización
-                                for col_pct in ['margen_hist_costo_pm', 'margen_idx_costo_pm', 'dif_pv_co_kavak']:
-                                    if col_pct in df_updated.columns:
-                                        df_updated[col_pct] = df_updated[col_pct].apply(lambda x: f"{x:.2%}" if pd.notnull(x) else "N/A")
-                                
-                                for col_price in ['precio_venta', 'precio_toma', 'pm', 'meli', 'kavak']:
-                                    if col_price in df_updated.columns:
-                                        df_updated[col_price] = df_updated[col_price].apply(lambda x: f"${x:,.2f}" if pd.notnull(x) else "N/A")
+                                c1, c2 = st.columns(2)
+                                with c1:
+                                    st.metric(label="Precio Promedio", value=f"${result['stats']['average_price']:,.2f} ARS")
+                                with c2:
+                                    st.metric(label="Vehículos Encontrados", value=len(df))
+                            
+                            with tab2:
+                                if "updated_stock" in result and result["updated_stock"]:
+                                    st.subheader("Valuación Final y Cálculos de Negocio")
+                                    df_updated = pd.DataFrame(result["updated_stock"])
+                                    
+                                    # Convertir ratios a porcentajes (0.15 -> 15.0) para el formateador %.2f%%
+                                    pct_cols = [
+                                        'margenhistorico_de_gestion_de_compra', 'diferencia_pp_y_pe', 
+                                        'margenhistorico_de_costo_y_pe', 'margenindexado_de_costo'
+                                    ]
+                                    for col in pct_cols:
+                                        if col in df_updated.columns:
+                                            df_updated[col] = df_updated[col].astype(float) * 100
 
-                                cols_to_show = ['patente', 'marca', 'modelo', 'anio', 'km', 'precio_venta', 'meli', 'kavak', 'pm', 'margen_hist_costo_pm', 'margen_idx_costo_pm', 'cuenta']
-                                existing_cols = [c for c in cols_to_show if c in df_updated.columns]
-                                st.dataframe(df_updated[existing_cols], use_container_width=True)
+                                    # Configuración de columnas con tooltips (help)
+                                    column_config = {
+                                        "patente": st.column_config.TextColumn("Patente"),
+                                        "preciopropuesto": st.column_config.NumberColumn(
+                                            "PM (Mercado)", 
+                                            help="Precio Mercado (PM): Promedio de precios encontrados en MeLi y Kavak.",
+                                            format="$%.2f"
+                                        ),
+                                        "margenhistorico_de_gestion_de_compra": st.column_config.NumberColumn(
+                                            "Mg. Hist. Compra",
+                                            help="Fórmula: (Precio Propuesto - Precio de Toma Total) / Precio Propuesto",
+                                            format="%.2f%%"
+                                        ),
+                                        "margenindexado_de_gestion_de_venta": st.column_config.NumberColumn(
+                                            "Costo 45d",
+                                            help="Costo indexado a 45 días: Precio Toma Total * ((Indice Diario * max(Dias Lote, 45)) / 100 + 1)",
+                                            format="$%.2f"
+                                        ),
+                                        "diferencia_pp_y_pe": st.column_config.NumberColumn(
+                                            "Dif. PP/PE",
+                                            help="Fórmula: 1 - (Precio Propuesto / Precio de Lista)",
+                                            format="%.2f%%"
+                                        ),
+                                        "margenhistorico_de_costo_y_pe": st.column_config.NumberColumn(
+                                            "Mg. Hist. Costo/PE",
+                                            help="Fórmula: (Precio de Lista - Precio de Toma Total) / Precio de Lista",
+                                            format="%.2f%%"
+                                        ),
+                                        "descuentorecargos": st.column_config.NumberColumn(
+                                            "Desc./Recargos",
+                                            help="Fórmula: Precio de Venta - Precio de Lista",
+                                            format="$%.2f"
+                                        ),
+                                        "margenindexado_de_costo": st.column_config.NumberColumn(
+                                            "Mg. Idx. Costo",
+                                            help="Fórmula: (Descuento Recargo - Costo Indexado a X días de Venta) / Descuento Recargo",
+                                            format="%.2f%%"
+                                        ),
+                                        "cuenta": st.column_config.NumberColumn(
+                                            "Cuenta",
+                                            help="Fórmula: (((2024 - Año) * 15000) - KM) / 5000 * 0.75%",
+                                            format="%.4f"
+                                        ),
+                                        "preciodeventa": st.column_config.NumberColumn("P. Venta", format="$%.2f"),
+                                        "meli": st.column_config.NumberColumn("MeLi", format="$%.2f"),
+                                        "kavak": st.column_config.NumberColumn("Kavak", format="$%.2f"),
+                                    }
+
+                                    # Seleccionar columnas para mostrar
+                                    cols_to_show = [
+                                        'patente', 'preciopropuesto', 'margenhistorico_de_gestion_de_compra', 
+                                        'margenindexado_de_gestion_de_venta', 'diferencia_pp_y_pe', 
+                                        'margenhistorico_de_costo_y_pe', 'descuentorecargos', 
+                                        'margenindexado_de_costo', 'cuenta', 'preciodeventa', 'meli', 'kavak'
+                                    ]
+                                    
+                                    existing_cols = [c for c in cols_to_show if c in df_updated.columns]
+                                    
+                                    st.dataframe(
+                                        df_updated[existing_cols],
+                                        use_container_width=True,
+                                        column_config=column_config,
+                                        hide_index=True
+                                    )
+                                    
                         else:
                             st.warning("El scraping terminó pero no se extrajeron vehículos válidos.")
                     elif result:
