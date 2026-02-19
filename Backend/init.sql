@@ -6,6 +6,8 @@ DROP TABLE IF EXISTS stock_comparison CASCADE;
 DROP TABLE IF EXISTS dolar_value CASCADE;
 DROP TABLE IF EXISTS stock_usados CASCADE;
 DROP TABLE IF EXISTS PreciosAutosUsados CASCADE;
+DROP TABLE IF EXISTS scraping_instructions CASCADE;
+DROP TABLE IF EXISTS site_configs CASCADE;
 
 -- 1. Tabla Transaccional: Registro histórico de cada publicación extraída
 CREATE TABLE IF NOT EXISTS extractions (
@@ -129,8 +131,107 @@ CREATE TABLE IF NOT EXISTS PreciosAutosUsados (
 -- Índices para optimizar búsquedas
 CREATE INDEX IF NOT EXISTS idx_precios_patente_semana ON PreciosAutosUsados (Patente, SemanaEjecucion);
 
+-- 6. Configuración de Sitios (Framework Modular)
+CREATE TABLE IF NOT EXISTS site_configs (
+    site_key VARCHAR(50) PRIMARY KEY, -- e.g., 'kavak', 'mercadolibre'
+    site_name VARCHAR(100) NOT NULL,
+    base_url TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- 7. Instrucciones de Scraping Versionadas
+CREATE TABLE IF NOT EXISTS scraping_instructions (
+    id SERIAL PRIMARY KEY,
+    site_key VARCHAR(50) REFERENCES site_configs(site_key),
+    version INTEGER NOT NULL,
+    navigation_instruction TEXT NOT NULL,
+    listing_instruction TEXT, -- Nueva: Cómo extraer la lista de resultados
+    interaction_instruction TEXT, -- Nueva: Cómo interactuar/clickear un item
+    extraction_instruction TEXT NOT NULL,
+    validation_rules JSONB, -- Reglas como { "version_match_min": 82 }
+    extraction_schema JSONB, -- Esquema JSON para Stagehand
+    steps JSONB, -- Secuencia de pasos (Nuevo Motor)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT FALSE,
+    UNIQUE(site_key, version)
+);
+
 -- Precarga de Stock Inicial
 BEGIN;
+    -- Insertar Sitios
+    INSERT INTO site_configs (site_key, site_name, base_url) VALUES 
+    ('kavak', 'Kavak', 'https://www.kavak.com/ar'),
+    ('meli', 'Mercado Libre', 'https://www.mercadolibre.com.ar/');
+
+    -- Insertar Instrucciones Iniciales para Kavak (Con Pasos)
+    INSERT INTO scraping_instructions (site_key, version, navigation_instruction, listing_instruction, interaction_instruction, extraction_instruction, validation_rules, extraction_schema, steps, is_active)
+    VALUES ('kavak', 1, 
+    '1. Si aparece un cartel de cookies o selección de país/región, acéptalo o ciérralo.
+2. Asegúrate de estar en la sección de compra de autos o categoria de Vehiculos (Marketplace). Si estás en la home, busca el botón ''Comprar un auto'', Categoria ''Vehiculos'' o similar.
+3. Verificar si se observan los filtros de búsqueda, en caso de que no se hallen hacer clic en la barra de búsqueda (entry point) para ver filtros si corresponde CASO CONTRARIO NO HACER NADA.
+REGLA CRÍTICA: Si no encuentras el valor exacto solicitado para CUALQUIERA de los filtros (Marca, Modelo, etc.), DETÉN el proceso inmediatamente.
+4. Aplica los filtros: Marca: ''{brand}'', Modelo: ''{model}'', Año: ''{year}'' y Disponibilidad: ''Disponible''.
+6. Ordenar por ''Relevancia''.
+7. Haz scroll para cargar los resultados.',
+    'Localiza la lista principal de resultados (ignora anuncios y recomendados). Extrae el título, año y kilometraje (solo el número, interpretando ''k'' como mil, ej: 136k km = 136000) de los primeros {max_publications} vehículos.',
+    'Localiza el vehículo en la posición {i} de la lista principal. Verifica que el título coincida con ''{listing_title}'', el año sea ''{listing_year}'' y el kilometraje sea ''{listing_km}''. Si coincide, haz clic en él para abrir el detalle. Ignora anuncios.',
+    'Extrae el título principal, año, kilometraje (solo el número, interpretando ''k'' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está ''Reservado'' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de ''Otras opciones de compra'', carruseles de ''autos similares'' o recomendaciones.',
+    '{"version_match_min": 82, "max_publications": 5}',
+    '{"type": "object", "properties": {"title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"}, "precio_contado": {"type": "number"}, "moneda": {"type": "string"}, "combustible": {"type": "string"}, "transmision": {"type": "string"}, "marca": {"type": "string"}, "modelo": {"type": "string"}, "version": {"type": "string"}, "ubicacion": {"type": "string"}, "url": {"type": "string", "format": "uri"}, "reservado": {"type": "boolean"}}}',
+    '[
+        {"type": "navigate", "url": "{base_url}"},
+        {"type": "action", "instruction": "1. Acepta cookies. 2. Ve a ''Comprar un auto''. 3. Aplica filtros: Marca ''{brand}'', Modelo ''{model}'', Año ''{year}'', Estado ''Disponible''. 4. Ordena por Relevancia."},
+        {"type": "wait", "seconds": 3},
+        {"type": "validate", "instruction": "Verifica si hay resultados para la búsqueda.", "schema": {"has_results": "boolean"}, "exit_on_false": "has_results"},
+        {"type": "extract", "variable": "list_url", "instruction": "Obtén la URL actual de la lista filtrada.", "schema": {"url": "string"}},
+        {
+            "type": "iterator",
+            "instruction": "Localiza la lista de resultados. Extrae título, año y km de los primeros {max_publications} vehículos.",
+            "schema": {"vehicles": {"type": "array", "items": {"type": "object", "properties": {"title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"}}}}},
+            "limit": 5,
+            "steps": [
+                {"type": "action", "instruction": "Haz clic en el vehículo con título ''{item.title}''."},
+                {"type": "wait", "seconds": 3},
+                {"type": "extract", "instruction": "Extrae precio, moneda, versión, km, año, ubicación, etc.", "schema": "default"},
+                {"type": "navigate", "url": "{list_url}"},
+                {"type": "wait", "seconds": 2}
+            ]
+        }
+    ]',
+    TRUE);
+
+    -- Insertar Instrucciones Iniciales para Mercado Libre (Con Pasos)
+    INSERT INTO scraping_instructions (site_key, version, navigation_instruction, listing_instruction, interaction_instruction, extraction_instruction, validation_rules, extraction_schema, steps, is_active)
+    VALUES ('meli', 1, 
+    'OBJETIVO: Encontrar un vehículo {brand} {model} usado del año {year}.
+1. BÚSQUEDA: Busca ''{brand} {model}''.
+2. FILTRO CONDICIÓN: Selecciona ''Usado''.
+3. FILTRO AÑO: Selecciona exactamente ''{year}''.
+4. VERIFICACIÓN: Si no hay resultados, informa ''Sin stock''.',
+    'Localiza la lista principal de resultados. Extrae el título, la versión y la URL (href) de los vehículos (máximo {max_publications}). FILTRO CRÍTICO: Solo incluye vehículos cuya versión (Sin tener en cuenta la marca y el modelo) coincida al menos en un 60% con ''{target_version}''.',
+    NULL, -- MeLi usa navegación directa por URL, no requiere click complejo en lista
+    'Extrae el título principal, año, kilometraje (solo el número, interpretando ''k'' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está ''Reservado'' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de ''Otras opciones de compra'', carruseles de ''autos similares'' o recomendaciones.',
+    '{"version_match_min": 60, "max_publications": 5}',
+    '{"type": "object", "properties": {"title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"}, "precio_contado": {"type": "number"}, "moneda": {"type": "string"}, "combustible": {"type": "string"}, "transmision": {"type": "string"}, "marca": {"type": "string"}, "modelo": {"type": "string"}, "version": {"type": "string"}, "ubicacion": {"type": "string"}, "url": {"type": "string", "format": "uri"}, "reservado": {"type": "boolean"}}}',
+    '[
+        {"type": "navigate", "url": "{base_url}"},
+        {"type": "action", "instruction": "Busca ''{brand} {model}'', filtra por ''Usado'' y año ''{year}''."},
+        {"type": "wait", "seconds": 3},
+        {"type": "validate", "instruction": "Verifica si hay resultados.", "schema": {"has_results": "boolean"}, "exit_on_false": "has_results"},
+        {
+            "type": "iterator",
+            "instruction": "Extrae título, versión y URL de los primeros {max_publications} vehículos.",
+            "schema": {"vehicles": {"type": "array", "items": {"type": "object", "properties": {"title": {"type": "string"}, "version": {"type": "string"}, "url": {"type": "string"}}}}},
+            "limit": 5,
+            "steps": [
+                {"type": "navigate", "url": "{item.url}"},
+                {"type": "wait", "seconds": 3},
+                {"type": "extract", "instruction": "Extrae detalles del vehículo.", "schema": "default"}
+            ]
+        }
+    ]',
+    TRUE);
+
     INSERT INTO stock_usados (Patente,Marca,Modelo,Anio,km,Color,Chasis,CotizacionNro,Ubicacion,CanalDeVenta,PrecioDeLista,PrecioDeToma,DiasLote,FechaIngreso,Sucursal,CostosReparaciones,Indice,CanalDeCompra,PrecioDeVenta,DescuentoRecargos,Preventa,FechaLote,TipoPv,FechaVenta,Concesionarioduenio,TieneVenta) VALUES ('AB978HV','CHERY','ARRIZO - 5 1.5 LUXURY AUT',2018,150830,'A/D','LVVDC21B5JD012231','101832','Tort. Canal alternativo','Usados',10400000,8200000,86,'22/10/2025 00:00:00','TORTUGUITAS',NULL,0.0968,'Compra Retoma',9630000,-770000,'US 06988/1','24/10/2025 00:00:00','Revendedores','5/11/2025 00:00:00','Inercikar','SI');
 INSERT INTO stock_usados (Patente,Marca,Modelo,Anio,km,Color,Chasis,CotizacionNro,Ubicacion,CanalDeVenta,PrecioDeLista,PrecioDeToma,DiasLote,FechaIngreso,Sucursal,CostosReparaciones,Indice,CanalDeCompra,PrecioDeVenta,DescuentoRecargos,Preventa,FechaLote,TipoPv,FechaVenta,Concesionarioduenio,TieneVenta) VALUES ('AF080PS','CHERY','TIGGO - 2 1.5 PRO MAX COMFORT',2021,22453,'A/D','LVVDB11B1NE008903','101600','Tort. Ventas US','Usados',24300000,19500000,81,'23/10/2025 00:00:00','TORTUGUITAS',NULL,0.0968,'Compra Retoma',NULL,NULL,NULL,'29/10/2025 00:00:00',NULL,NULL,'Wagen','NO');
 INSERT INTO stock_usados (Patente,Marca,Modelo,Anio,km,Color,Chasis,CotizacionNro,Ubicacion,CanalDeVenta,PrecioDeLista,PrecioDeToma,DiasLote,FechaIngreso,Sucursal,CostosReparaciones,Indice,CanalDeCompra,PrecioDeVenta,DescuentoRecargos,Preventa,FechaLote,TipoPv,FechaVenta,Concesionarioduenio,TieneVenta) VALUES ('AC464YH','CHERY','TIGGO - 3 1.6 4X2 CONFORT L16',2018,22453,'A/D','LVVDB11B8JDO15380','103105','Tort. Canal alternativo','Usados',14200000,11000000,37,'5/12/2025 00:00:00','TORTUGUITAS',NULL,0.0968,'Compra Retoma',13230000,-970000,'US 04363/1','12/12/2025 00:00:00','Revendedores','16/12/2025 00:00:00','Bleu','SI');

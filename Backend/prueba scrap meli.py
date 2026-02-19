@@ -18,7 +18,7 @@ try:
 except ImportError:
     Stagehand = None
 
-def extract_meli_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, progress_callback=None):
+def extract_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, progress_callback=None, listing_instruction=None, interaction_instruction=None, instruction=None, schema=None, steps=None, rules=None):
     """Extrae detalles de publicaciones de MeLi recopilando URLs y navegando a cada una."""
     logger = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
         logger.info(msg)
 
     usage_stats = {"total_tokens": 0}
+    
+    # Aplicar reglas dinámicas
+    if rules and isinstance(rules, dict):
+        max_publications = rules.get("max_publications", max_publications)
 
     def log_token_usage(action_name):
         """Obtiene y muestra el uso de tokens acumulado y el delta de la acción."""
@@ -48,7 +52,7 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
         try:
             listings_info = client_sync.sessions.extract(
                 id=sess_id,
-                instruction=f"Localiza la lista principal de resultados. Extrae el título, la versión y la URL (href) de los vehículos (máximo {max_publications}). FILTRO CRÍTICO: Solo incluye vehículos cuya versión (Sin tener en cuenta la marca y el modelo) coincida al menos en un 60% con '{target_version}'.",
+                instruction=listing_instruction.format(max_publications=max_publications, target_version=target_version) if listing_instruction else f"Extrae título, versión y URL de los primeros {max_publications} vehículos.",
                 schema={
                     "type": "object",
                     "properties": {
@@ -108,19 +112,8 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
             
             detail_res = client_sync.sessions.extract(
                 id=sess_id,
-                instruction="Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones.",
-                schema={
-                    "type": "object", 
-                    "properties": {
-                        "title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"},
-                        "precio_contado": {"type": "number"}, "moneda": {"type": "string"},
-                        "combustible": {"type": "string"}, "transmision": {"type": "string"},
-                        "marca": {"type": "string"}, "modelo": {"type": "string"},
-                        "version": {"type": "string"}, "ubicacion": {"type": "string"},
-                        "url": {"type": "string", "format": "uri"},
-                        "reservado": {"type": "boolean", "description": "Indica si el vehículo aparece como 'Reservado'"}
-                    }
-                }
+                instruction=instruction or "Extrae los datos del vehículo.",
+                schema=schema or {"type": "object", "properties": {"title": {"type": "string"}}}
             )
             item = detail_res.data.result
             if item:
