@@ -519,9 +519,16 @@ async def scrape_cars(request: ScrapeRequest):
                             raw_link = str(item.get('link', item.get('url', '')))
                             full_link = urljoin(SITE_URLS.get(site_name, ""), raw_link)
                             
-                            # Separar campos estándar de los custom
-                            standard_fields = ['brand', 'model', 'version', 'year', 'km', 'price', 'currency', 'title', 'combustible', 'transmision', 'zona', 'url', 'reservado']
-                            custom_data = {k: v for k, v in item.items() if k not in standard_fields}
+                            # Definir campos que ya son parte del esquema estándar (incluyendo sinónimos)
+                            standard_keys = {
+                                'title', 'titulo', 'year', 'año', 'km', 'kilometraje', 'precio', 'price', 
+                                'precio_contado', 'moneda', 'currency', 'combustible', 'transmision', 
+                                'marca', 'brand', 'modelo', 'model', 'version', 'ubicacion', 'zona', 
+                                'url', 'link', 'fecha_publicacion', 'reservado'
+                            }
+                            # Guardar en custom_data SOLO los campos que el usuario solicitó explícitamente
+                            # y que no colisionan con los campos estándar ya procesados.
+                            custom_data = {k: v for k, v in item.items() if k in request.custom_fields and k not in standard_keys}
 
 
                             extracted_data.append({
@@ -595,6 +602,46 @@ async def scrape_cars(request: ScrapeRequest):
             yield json.dumps({"type": "final", "status": "error", "message": str(e)}) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+@app.get("/history/extractions")
+async def get_extractions_history():
+    """Obtiene el historial de extracciones crudas."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT brand, model, version, year, km, price, currency, site, zona, fecha_transaccion, url, datos_adicionales 
+            FROM extractions 
+            ORDER BY fecha_transaccion DESC 
+            LIMIT 500
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        for r in rows:
+            if isinstance(r['price'], Decimal): r['price'] = float(r['price'])
+            if r['fecha_transaccion']: r['fecha_transaccion'] = r['fecha_transaccion'].isoformat()
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/history/valuations")
+async def get_valuations_history():
+    """Obtiene el historial de valuaciones calculadas de negocio."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM PreciosAutosUsados ORDER BY FechaEjecucion DESC, SemanaEjecucion DESC LIMIT 100")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        for r in rows:
+            for k, v in r.items():
+                if isinstance(v, Decimal): r[k] = float(v)
+                elif isinstance(v, (datetime, date)): r[k] = v.isoformat()
+        return rows
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     port = int(os.getenv("BACKEND_PORT", 8000))
