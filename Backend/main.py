@@ -344,12 +344,11 @@ async def get_stock():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
-            SELECT Patente as patente, Marca as marca, Modelo as modelo, Anio as anio, km, 
+            SELECT Patente as patente, Marca as marca, Modelo as modelo, Anio as anio, km,
                    Ubicacion as ubicacion, PrecioDeLista as precio_lista, PrecioDeToma as precio_toma, 
                    DiasLote as dias_lote, PrecioDeVenta as precio_venta, TieneVenta as tiene_venta 
             FROM stock_usados ORDER BY Marca, Modelo
         """)
-        cur.execute("SELECT Patente as patente, Marca as marca, Modelo as modelo, Anio as anio, km, PrecioDeVenta as precio_venta FROM stock_usados ORDER BY Marca, Modelo")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -379,6 +378,11 @@ async def scrape_cars(request: ScrapeRequest):
             logger.info(msg)
             # Enviamos al frontend de forma segura entre hilos
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "status", "message": msg})
+
+        def send_error(msg, screenshot=None):
+            logger.error(f"❌ {msg}")
+            # Enviamos el error y la captura opcional al frontend
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": msg, "screenshot": screenshot})
 
         # 1. Obtener tipo de cambio
         log_status(f"🚀 Iniciando proceso para {request.brand} {request.model} {request.year}...")
@@ -433,15 +437,6 @@ async def scrape_cars(request: ScrapeRequest):
                 except: pass
                 send_error(f"Error en {site_name}: {str(e)}", screenshot)
                 return "ERROR"
-            progress_callback(f"🤖 [{site_name.upper()}] Agente IA navegando...")
-            client_sync.sessions.execute(
-                id=sess_id,
-                execute_options={
-                    "instruction": instruction,
-                    "max_steps": 20,
-                },
-                agent_config={"model": {"model_name": model_name}},
-            )
 
             # Verificación rápida de resultados para detener el proceso si no hay nada
             progress_callback(f"🧐 [{site_name.upper()}] Verificando resultados...")
@@ -518,7 +513,7 @@ async def scrape_cars(request: ScrapeRequest):
                     logger.error(f"❌ Error en tarea de scraping: {raw_results}")
                     continue
                 
-                if raw_results == "NO_RESULTS": continue
+                if raw_results in ("NO_RESULTS", "ERROR"): continue
 
                 items = raw_results.get("autos", [])
                 site_name = raw_results.get("site", "Desconocido").lower()
@@ -611,6 +606,7 @@ async def scrape_cars(request: ScrapeRequest):
                     yield json.dumps({
                         "type": "final",
                         "status": "success", "data": df.to_dict('records'),
+                        "exchange_rate": exchange_rate,
                         "stats": res_stats,
                         "updated_stock": updated_stock,
                         "message": f"Se extrajeron {len(df)} publicaciones exitosamente."

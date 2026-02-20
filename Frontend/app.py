@@ -238,15 +238,15 @@ if view == "🚀 Scraper":
 
                 c1, c2 = st.columns(2)
                 if c1.button("💾 Guardar", key=f"btn_save_{nav_key}", use_container_width=True, type="primary"):
-                # VALIDACIÓN DE VARIABLES CRÍTICAS
+                    # VALIDACIÓN DE VARIABLES CRÍTICAS
                     nav_txt = st.session_state[f"temp_{nav_key}"]
-                if "{marca}" not in nav_txt or "{modelo}" not in nav_txt:
-                    st.error("⚠️ Error: Las instrucciones deben contener {marca} y {modelo}.")
-                else:
-                    st.session_state[nav_key] = st.session_state[f"temp_{nav_key}"]
-                    st.session_state[ext_key] = st.session_state[f"temp_{ext_key}"]
-                    st.session_state[edit_mode_key] = False
-                    st.rerun()
+                    if "{marca}" not in nav_txt or "{modelo}" not in nav_txt:
+                        st.error("⚠️ Error: Las instrucciones deben contener {marca} y {modelo}.")
+                    else:
+                        st.session_state[nav_key] = st.session_state[f"temp_{nav_key}"]
+                        st.session_state[ext_key] = st.session_state[f"temp_{ext_key}"]
+                        st.session_state[edit_mode_key] = False
+                        st.rerun()
 
                 if c2.button("✖️ Cerrar sin guardar", key=f"btn_cancel_{nav_key}", use_container_width=True):
                     st.session_state[edit_mode_key] = False
@@ -277,7 +277,6 @@ if view == "🚀 Scraper":
             for s in selected_sites: site_badges[s].markdown(f"⚪ **{s}**: Esperando...")
 
             with st.spinner("El proceso de IA puede tardar varios minutos (Navegación + Filtrado + Extracción)..."):
-                st.info("🚀 Conectando con el backend...")
                 
                 payload = {
                     "sites": selected_sites,
@@ -313,17 +312,33 @@ if view == "🚀 Scraper":
                                 if event["type"] == "status":
                                     msg = event["message"]; now = datetime.now().strftime("%H:%M:%S")
                                     st.session_state.execution_logs.append({"message": msg, "time": now})
-                                    st.markdown(f"{msg} <span style='float:right; color:gray;'>{now}</span>", unsafe_allow_html=True)
+                                    st.markdown(f"{msg} <span style='float:right; color:gray; font-size:0.85em;'>{now}</span>", unsafe_allow_html=True)
                                     
-                                    # Actualizar progreso
-                                    if "Iniciando" in msg: progress_bar.progress(10, text="Preparando entorno...")
-                                    elif "navegando" in msg: progress_bar.progress(40, text="Navegando...")
-                                    elif "Extrayendo" in msg: progress_bar.progress(70, text="Extrayendo datos...")
-                                    
+                                    # --- UNIFICACIÓN DE BARRA DE PROGRESO ---
+                                    if "Iniciando proceso" in msg: progress_bar.progress(5, text="Iniciando Agente...")
+                                    elif "tipo de cambio" in msg: progress_bar.progress(15, text="Consultando divisas...")
+                                    elif "Agente IA navegando" in msg: progress_bar.progress(35, text="Navegando por portales...")
+                                    elif "Resultados confirmados" in msg: progress_bar.progress(55, text="Filtros aplicados. Extrayendo...")
+                                    elif "Procesando vehículo" in msg: progress_bar.progress(75, text="Extrayendo detalles técnicos...")
+                                    elif "Procesando datos extraídos" in msg: progress_bar.progress(90, text="Finalizando análisis...")
+
+                                    # --- UNIFICACIÓN DE INDICADORES POR SITIO ---
                                     for s in selected_sites:
-                                        if f"[{s.upper()}]" in msg.upper():
-                                            icon = "🔵" if "navegando" in msg.lower() else "🟢" if "✅" in msg or "finalizado" in msg.lower() else "🟠"
-                                            site_badges[s].markdown(f"{icon} **{s}**: {msg.split(']')[-1].strip()}")
+                                        s_key = s.upper().replace(" ", "")
+                                        if f"[{s_key}]" in msg.upper():
+                                            clean_msg = msg.split(']')[-1].strip()
+                                            clean_msg = re.sub(r'^[^\w\s]+', '', clean_msg).strip() # Quitar emojis iniciales
+                                            
+                                            icon = "⚪"
+                                            if "Iniciando" in msg: icon = "🟠"
+                                            elif "navegando" in msg: icon = "🔵"
+                                            elif "Verificando" in msg: icon = "🔍"
+                                            elif "Extrayendo" in msg or "Procesando" in msg: icon = "📥"
+                                            elif "✅" in msg or "finalizado" in msg: icon = "🟢"
+                                            elif "Error" in msg or "❌" in msg: icon = "🔴"
+                                            
+                                            site_badges[s].markdown(f"{icon} **{s}**: {clean_msg}")
+
                                 elif event["type"] == "error":
                                     st.error(f"❌ Error: {event['message']}")
                                     if event.get("screenshot"):

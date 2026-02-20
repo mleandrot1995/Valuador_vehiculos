@@ -33,7 +33,7 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
     page_number = 1
 
     while True:
-        notify(f"📄 [MeLi] Recopilando URLs de página {page_number}...")
+        notify(f"📄 Recopilando URLs de página {page_number}...")
         try:
             listings_info = client_sync.sessions.extract(
                 id=sess_id,
