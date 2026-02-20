@@ -64,48 +64,38 @@ def fetch_history_valuations():
 
 # Cuerpo principal
 if view == "🚀 Scraper":
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Selección de Vehículo")
-        stock_list = fetch_stock()
-        
-        if not stock_list:
-            st.error("No se pudo cargar el stock desde la base de datos.")
-            st.stop()
+    st.subheader("🔍 Selección de Vehículo")
+    stock_list = fetch_stock()
+    if not stock_list:
+        st.error("No se pudo cargar el stock.")
+        st.stop()
 
-        df_stock = pd.DataFrame(stock_list)
-        # Separar modelo y versión del campo 'modelo' de la DB (formato: "MODELO - VERSION")
-        split_data = df_stock['modelo'].str.split(" - ", n=1, expand=True)
-        df_stock['model_name'] = split_data[0]
-        df_stock['version_name'] = split_data[1].fillna("N/A")
+    df_stock = pd.DataFrame(stock_list)
+    split_data = df_stock['modelo'].str.split(" - ", n=1, expand=True)
+    df_stock['model_name'] = split_data[0]
+    df_stock['version_name'] = split_data[1].fillna("N/A")
 
-        # 1. Selección de Marca
-        brands = sorted(df_stock['marca'].unique().tolist())
-        brand = st.selectbox("Marca", options=brands)
-        
-        # 2. Selección de Modelo (dependiente de Marca)
-        models = sorted(df_stock[df_stock['marca'] == brand]['model_name'].unique().tolist())
-        model = st.selectbox("Modelo", options=models)
-        
-        # 3. Selección de Versión (dependiente de Modelo)
-        versions = sorted(df_stock[(df_stock['marca'] == brand) & (df_stock['model_name'] == model)]['version_name'].unique().tolist())
-        version = st.selectbox("Versión", options=versions)
-        
-        # 4. Selección de Año (dependiente de Versión)
-        years = sorted(df_stock[(df_stock['marca'] == brand) & 
-                                (df_stock['model_name'] == model) & 
-                                (df_stock['version_name'] == version)]['anio'].unique().tolist(), reverse=True)
-        year = st.selectbox("Año", options=years)
+    # --- FILTROS HORIZONTALES ---
+    f1, f2, f3, f4 = st.columns(4)
+    brand = f1.selectbox("Marca", options=sorted(df_stock['marca'].unique().tolist()))
+    model = f2.selectbox("Modelo", options=sorted(df_stock[df_stock['marca'] == brand]['model_name'].unique().tolist()))
+    version = f3.selectbox("Versión", options=sorted(df_stock[(df_stock['marca'] == brand) & (df_stock['model_name'] == model)]['version_name'].unique().tolist()))
+    year = f4.selectbox("Año", options=sorted(df_stock[(df_stock['marca'] == brand) & (df_stock['model_name'] == model) & (df_stock['version_name'] == version)]['anio'].unique().tolist(), reverse=True))
 
-        # Obtener datos del registro seleccionado para la patente
-        selected_car = df_stock[(df_stock['marca'] == brand) & 
-                                (df_stock['model_name'] == model) & 
-                                (df_stock['version_name'] == version) &
-                                (df_stock['anio'] == year)].iloc[0]
-        
-        default_patente = str(selected_car['patente'])
+    # --- COINCIDENCIAS EN STOCK (Full Width) ---
+    matches = df_stock[(df_stock['marca'] == brand) & (df_stock['model_name'] == model) & (df_stock['version_name'] == version) & (df_stock['anio'] == year)]
+    with st.expander(f"📋 Coincidencias en Stock ({len(matches)})", expanded=False):
+        # Excluir columnas técnicas model_name y version_name de la visualización para el usuario
+        display_matches = matches.drop(columns=['model_name', 'version_name'], errors='ignore')
+        st.dataframe(display_matches, use_container_width=True, hide_index=True)
 
-        selected_sites = st.multiselect("Sitios a scrapear", ["Kavak", "Mercado Libre"], default=["Kavak"])
+    selected_car = matches.iloc[0] if not matches.empty else None
+    default_patente = str(selected_car['patente']) if selected_car is not None else ""
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        selected_sites = st.multiselect("Sitios a scrapear", ["Kavak", "Mercado Libre"], default=["Kavak", "Mercado Libre"])
+    with c2:
         km_max = st.number_input("KM Máximo", min_value=0, step=5000, value=50000)
 
     # --- SECCIÓN: CONFIGURACIÓN PERSONALIZADA (Fuera de columnas para máximo ancho) ---
@@ -248,10 +238,16 @@ if view == "🚀 Scraper":
 
                 c1, c2 = st.columns(2)
                 if c1.button("💾 Guardar", key=f"btn_save_{nav_key}", use_container_width=True, type="primary"):
+                # VALIDACIÓN DE VARIABLES CRÍTICAS
+                    nav_txt = st.session_state[f"temp_{nav_key}"]
+                if "{marca}" not in nav_txt or "{modelo}" not in nav_txt:
+                    st.error("⚠️ Error: Las instrucciones deben contener {marca} y {modelo}.")
+                else:
                     st.session_state[nav_key] = st.session_state[f"temp_{nav_key}"]
                     st.session_state[ext_key] = st.session_state[f"temp_{ext_key}"]
                     st.session_state[edit_mode_key] = False
                     st.rerun()
+
                 if c2.button("✖️ Cerrar sin guardar", key=f"btn_cancel_{nav_key}", use_container_width=True):
                     st.session_state[edit_mode_key] = False
                     st.rerun()
@@ -268,17 +264,20 @@ if view == "🚀 Scraper":
 
     scrape_btn = st.button("Iniciar Scraping", type="primary", use_container_width=True)
 
-    # 3. Visualización en tiempo real (Status Box)
-    status_placeholder = st.empty()
-
     # Lógica principal
     if scrape_btn:
         if not api_key or not selected_sites:
             st.warning("Por favor ingrese una API Key y seleccione al menos un sitio.")
         else:
             st.session_state.execution_logs = [] # Reiniciar logs para nueva ejecución
+            
+            # --- BARRA DE PROGRESO E INDICADORES ---
+            progress_bar = st.progress(0, text="Iniciando Agente IA...")
+            site_badges = {s: st.empty() for s in selected_sites}
+            for s in selected_sites: site_badges[s].markdown(f"⚪ **{s}**: Esperando...")
+
             with st.spinner("El proceso de IA puede tardar varios minutos (Navegación + Filtrado + Extracción)..."):
-                status_placeholder.info("🚀 Conectando con el backend y lanzando agente IA...")
+                st.info("🚀 Conectando con el backend...")
                 
                 payload = {
                     "sites": selected_sites,
@@ -312,23 +311,42 @@ if view == "🚀 Scraper":
                                 event = json.loads(line)
                                 
                                 if event["type"] == "status":
-                                    now = datetime.now().strftime("%H:%M:%S")
-                                    msg = event["message"]
+                                    msg = event["message"]; now = datetime.now().strftime("%H:%M:%S")
                                     st.session_state.execution_logs.append({"message": msg, "time": now})
-                                    # Mostrar con la hora a la derecha usando HTML
-                                    st.markdown(f"{msg} <span style='float:right; color:gray; font-size:0.85em;'>{now}</span>", unsafe_allow_html=True)
+                                    st.markdown(f"{msg} <span style='float:right; color:gray;'>{now}</span>", unsafe_allow_html=True)
+                                    
+                                    # Actualizar progreso
+                                    if "Iniciando" in msg: progress_bar.progress(10, text="Preparando entorno...")
+                                    elif "navegando" in msg: progress_bar.progress(40, text="Navegando...")
+                                    elif "Extrayendo" in msg: progress_bar.progress(70, text="Extrayendo datos...")
+                                    
+                                    for s in selected_sites:
+                                        if f"[{s.upper()}]" in msg.upper():
+                                            icon = "🔵" if "navegando" in msg.lower() else "🟢" if "✅" in msg or "finalizado" in msg.lower() else "🟠"
+                                            site_badges[s].markdown(f"{icon} **{s}**: {msg.split(']')[-1].strip()}")
+                                elif event["type"] == "error":
+                                    st.error(f"❌ Error: {event['message']}")
+                                    if event.get("screenshot"):
+                                        st.image(f"data:image/png;base64,{event['screenshot']}", caption="Captura de pantalla del error")
                                 elif event["type"] == "final":
                                     result = event
                                     status_container.update(label="✅ Proceso finalizado", state="complete", expanded=True)
 
                         if result and result.get("status") == "success":
-                            status_placeholder.success(f"✅ Scraping completado! {result['message']}")
+                            st.success(f"✅ Scraping completado!")
                             
-                            # 4. Tablas y Gráficos
                             if "data" in result and result["data"]:
+                                progress_bar.progress(100, text="¡Completado!")
                                 tab1, tab2, tab3 = st.tabs(["🔍 Resultados de Scraping", "📈 Resultados", "📋 Log de Proceso"])
                                 
                                 with tab1:
+                                    # --- MÉTRICAS EN COLUMNAS ---
+                                    m1, m2, m3 = st.columns(3)
+                                    m1.metric("Precio Promedio", f"${result['stats']['average_price']:,.0f} ARS")
+                                    m2.metric("Vehículos Encontrados", len(result['data']))
+                                    m3.metric("Dólar Aplicado", f"${result.get('exchange_rate', 0):,.2f}")
+                                    st.divider()
+
                                     df = pd.DataFrame(result["data"])
                                     
                                     # Formateo de precio para visualización con conversión
@@ -339,28 +357,19 @@ if view == "🚀 Scraper":
                                     
                                     df['Precio'] = df.apply(display_price, axis=1)
                                     
-                                    st.subheader("Publicaciones Encontradas")
-                                    
-                                    # Preparar DataFrame para visualización
                                     df_display = df[['brand', 'model', 'version', 'year', 'km', 'Precio', 'zona', 'reservado', 'site', 'url']].copy()
                                     df_display.columns = ['Marca', 'Modelo', 'Versión', 'Año', 'KM', 'Precio', 'Zona', 'Reservado', 'Sitio', 'Link']
                                     df_display['Reservado'] = df_display['Reservado'].apply(lambda x: "✅" if x else "❌")
 
-                                    st.dataframe(
-                                        df_display,
-                                        use_container_width=True,
-                                        column_config={
-                                            "Link": st.column_config.LinkColumn("Link", display_text="🔗")
-                                        },
-                                        hide_index=True
-                                    )
-                                    
-                                    st.divider()
-                                    c1, c2 = st.columns(2)
-                                    with c1:
-                                        st.metric(label="Precio Promedio", value=f"${result['stats']['average_price']:,.2f} ARS")
-                                    with c2:
-                                        st.metric(label="Vehículos Encontrados", value=len(df))
+                                    # --- DETECCIÓN DE OUTLIERS ---
+                                    avg = result['stats']['average_price']
+                                    def style_outliers(row):
+                                        p_ars = df.iloc[row.name]['price_ars']
+                                        if p_ars < avg * 0.8: return ['background-color: #d4edda'] * len(row)
+                                        if p_ars > avg * 1.2: return ['background-color: #f8d7da'] * len(row)
+                                        return [''] * len(row)
+
+                                    st.dataframe(df_display.style.apply(style_outliers, axis=1), use_container_width=True, hide_index=True, column_config={"Link": st.column_config.LinkColumn("Link", display_text="🔗")})
                                 
                                 with tab2:
                                     if "updated_stock" in result and result["updated_stock"]:
@@ -463,9 +472,28 @@ if view == "🚀 Scraper":
                     st.error(f"❌ Ocurrió un error inesperado: {str(e)}")
 else:
     st.header("📜 Historial de Ejecuciones")
-    st.markdown("Consulta los datos persistidos en la base de datos de ejecuciones pasadas.")
+    hist_tab1, hist_tab2, hist_tab3 = st.tabs(["🔍 Extracciones", "📊 Valuaciones", "📈 Tendencias y Comparativa"])
     
-    hist_tab1, hist_tab2 = st.tabs(["🔍 Extracciones (Datos Crudos)", "📊 Valuaciones (Resultados de Negocio)"])
+    with hist_tab3:
+        val_data = fetch_history_valuations()
+        if val_data:
+            df_h = pd.DataFrame(val_data)
+            # --- GRÁFICO DE TENDENCIA ---
+            st.subheader("📈 Evolución de Precio Propuesto")
+            pat_sel = st.selectbox("Seleccionar Patente", options=df_h['patente'].unique())
+            df_pat = df_h[df_h['patente'] == pat_sel].sort_values('fechaejecucion')
+            st.line_chart(df_pat, x='fechaejecucion', y='preciopropuesto')
+            
+            # --- COMPARADOR DE DELTAS ---
+            st.divider()
+            st.subheader("⚖️ Comparador de Ejecuciones")
+            c_cols = st.columns(2)
+            id1 = c_cols[0].selectbox("Ejecución A (Base)", options=df_pat['id'].tolist(), key="ca")
+            id2 = c_cols[1].selectbox("Ejecución B (Nueva)", options=df_pat['id'].tolist(), key="cb")
+            if id1 and id2:
+                r1 = df_pat[df_pat['id'] == id1].iloc[0]; r2 = df_pat[df_pat['id'] == id2].iloc[0]
+                delta = ((r2['preciopropuesto'] / r1['preciopropuesto']) - 1) * 100
+                st.metric("Variación de Precio", f"${r2['preciopropuesto']:,.0f}", f"{delta:.2f}%")
     
     with hist_tab1:
         if st.button("🔄 Refrescar Historial de Extracciones"):

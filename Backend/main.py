@@ -343,6 +343,12 @@ async def get_stock():
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT Patente as patente, Marca as marca, Modelo as modelo, Anio as anio, km, 
+                   Ubicacion as ubicacion, PrecioDeLista as precio_lista, PrecioDeToma as precio_toma, 
+                   DiasLote as dias_lote, PrecioDeVenta as precio_venta, TieneVenta as tiene_venta 
+            FROM stock_usados ORDER BY Marca, Modelo
+        """)
         cur.execute("SELECT Patente as patente, Marca as marca, Modelo as modelo, Anio as anio, km, PrecioDeVenta as precio_venta FROM stock_usados ORDER BY Marca, Modelo")
         rows = cur.fetchall()
         cur.close()
@@ -409,6 +415,24 @@ async def scrape_cars(request: ScrapeRequest):
 
             instruction = get_full_navigation_instruction(domain, request.brand, request.model, request.year, request.version, site_nav_instr)
             
+            try:
+                progress_callback(f"🤖 [{site_name.upper()}] Agente IA navegando...")
+                client_sync.sessions.execute(
+                    id=sess_id,
+                    execute_options={
+                        "instruction": instruction,
+                        "max_steps": 20,
+                    },
+                    agent_config={"model": {"model_name": model_name}},
+                )
+            except Exception as e:
+                screenshot = None
+                try:
+                    ss = client_sync.sessions.screenshot(id=sess_id)
+                    screenshot = ss.data.base64
+                except: pass
+                send_error(f"Error en {site_name}: {str(e)}", screenshot)
+                return "ERROR"
             progress_callback(f"🤖 [{site_name.upper()}] Agente IA navegando...")
             client_sync.sessions.execute(
                 id=sess_id,
