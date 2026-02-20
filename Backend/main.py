@@ -60,6 +60,11 @@ class ScrapeRequest(BaseModel):
     version: str
     km_max: int
     api_key: str
+    nav_instr_kavak: str = None
+    ext_instr_kavak: str = None
+    nav_instr_meli: str = None
+    ext_instr_meli: str = None
+    custom_fields: List[str] = []
     patente: str = None
     headless: bool = False
 
@@ -137,7 +142,7 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
         # 1. Tabla Transaccional: extractions
         if extracted_data:
             insert_query = """
-                INSERT INTO extractions (brand, model, version, year, km, price, currency, title, combustible, transmision, zona, fecha_publicacion, reservado, url, site)
+                INSERT INTO extractions (brand, model, version, year, km, price, currency, title, combustible, transmision, zona, fecha_publicacion, reservado, url, site, datos_adicionales)
                 VALUES %s
             """
             values = [
@@ -145,7 +150,8 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                     item.get('brand'), item.get('model'), item.get('version'), item.get('year'), item.get('km'), 
                     item.get('price'), item.get('currency'), item.get('title'), item.get('combustible'), 
                     item.get('transmision'), item.get('zona'), item.get('fecha_publicacion'), 
-                    item.get('reservado'), item.get('url'), item.get('site')
+                    item.get('reservado'), item.get('url'), item.get('site'),
+                    json.dumps(item.get('custom_data', {}))
                 ) for item in extracted_data
             ]
             execute_values(cur, insert_query, values)
@@ -212,7 +218,8 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 # Valor de Toma a X días
                 valor_toma_x_dias = float(precio_toma_total * (1 + (indice_diario * dif_asofix_pe) / 100))
                 
-                cuenta = (((2024 - int(stock_car['anio'])) * 15000) - int(stock_car['km'] or 0)) / 5000.0 * 0.0075
+                current_year = date.today().year
+                cuenta = (((current_year - int(stock_car['anio'])) * 15000) - int(stock_car['km'] or 0)) / 5000.0 * 0.0075
                 
                 # Costo Indexado a X días de Venta
                 costo_idx_venta_days = float(precio_toma_total * (1 + (0.04 / 30) * dias_lote))
@@ -290,10 +297,14 @@ def load_scraper_module(file_name):
     spec.loader.exec_module(module)
     return module
 
-def get_full_navigation_instruction(domain: str, brand: str, model: str, year: int) -> str:
+def get_full_navigation_instruction(domain: str, brand: str, model: str, year: int, version: str, custom_template: str = None) -> str:
     """
     Genera la instrucción completa y robusta para el agente de IA.
     """
+    if custom_template:
+        # Reemplazar variables en el template del usuario
+        return custom_template.format(marca=brand, modelo=model, anio=year, version=version)
+
     base_instr = ""
     
     if "kavak" in domain:
@@ -375,7 +386,7 @@ async def scrape_cars(request: ScrapeRequest):
             domain = site_name
             
             # --- NAVEGACIÓN ASISTIDA POR IA (Stagehand) ---
-            progress_callback(f"🌐 [{site_name.upper()}] Iniciando navegador local...")
+            progress_callback(f"🌐 [{site_name.upper()}] Iniciando Agente...")
             client_sync = Stagehand(
                 server="local",
                 model_api_key=request.api_key,
@@ -392,7 +403,11 @@ async def scrape_cars(request: ScrapeRequest):
             
             client_sync.sessions.navigate(id=sess_id, url=target_url)
 
-            instruction = get_full_navigation_instruction(domain, request.brand, request.model, request.year)
+            # Seleccionar instrucción según el sitio
+            site_nav_instr = request.nav_instr_kavak if "kavak" in site_name else request.nav_instr_meli
+            site_ext_instr = request.ext_instr_kavak if "kavak" in site_name else request.ext_instr_meli
+
+            instruction = get_full_navigation_instruction(domain, request.brand, request.model, request.year, request.version, site_nav_instr)
             
             progress_callback(f"🤖 [{site_name.upper()}] Agente IA navegando...")
             client_sync.sessions.execute(
@@ -434,12 +449,12 @@ async def scrape_cars(request: ScrapeRequest):
             if "kavak" in site_name:
                 kavak_module = load_scraper_module("prueba scrap kavak.py")
                 all_extracted_items = kavak_module.extract_kavak_details(
-                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, progress_callback=lambda m: progress_callback(f"[{site_name.upper()}] {m}")
+                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, site_ext_instr, request.custom_fields, progress_callback=lambda m: progress_callback(f"[{site_name.upper()}] {m}")
                 )
             elif "mercadolibre" in site_name:
                 meli_module = load_scraper_module("prueba scrap meli.py")
                 all_extracted_items = meli_module.extract_meli_details(
-                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, progress_callback=lambda m: progress_callback(f"[{site_name.upper()}] {m}")
+                    client_sync, sess_id, current_url, max_pubs, request.version, model_name, site_ext_instr, request.custom_fields, progress_callback=lambda m: progress_callback(f"[{site_name.upper()}] {m}")
                 )
             else:
                 progress_callback(f"⚠️ [{site_name.upper()}] No soportado.")
@@ -503,6 +518,11 @@ async def scrape_cars(request: ScrapeRequest):
                             year = int(clean_num(item.get('año', item.get('year', request.year))))
                             raw_link = str(item.get('link', item.get('url', '')))
                             full_link = urljoin(SITE_URLS.get(site_name, ""), raw_link)
+                            
+                            # Separar campos estándar de los custom
+                            standard_fields = ['brand', 'model', 'version', 'year', 'km', 'price', 'currency', 'title', 'combustible', 'transmision', 'zona', 'url', 'reservado']
+                            custom_data = {k: v for k, v in item.items() if k not in standard_fields}
+
 
                             extracted_data.append({
                                 "brand": str(item.get('marca', item.get('brand', request.brand))),
@@ -515,6 +535,7 @@ async def scrape_cars(request: ScrapeRequest):
                                 "zona": str(item.get('zona', item.get('ubicacion', 'N/A'))),
                                 "fecha_publicacion": str(item.get('fecha_publicacion', 'N/A')),
                                 "reservado": bool(item.get('reservado', False)),
+                                "custom_data": custom_data,
                                 "url": full_link, "site": site_name.capitalize()
                             })
                             processed_items_for_site.append(extracted_data[-1])

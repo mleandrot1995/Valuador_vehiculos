@@ -1,24 +1,13 @@
-import asyncio
-import sys
 import logging
 import json
-import os
-import re
-import pandas as pd
-from urllib.parse import urlparse, urljoin
-import uvicorn
+from urllib.parse import urljoin
 import time
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
 try:
     from stagehand import Stagehand
 except ImportError:
     Stagehand = None
 
-def extract_meli_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, progress_callback=None):
+def extract_meli_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, custom_instruction=None, custom_fields=None, progress_callback=None):
     """Extrae detalles de publicaciones de MeLi recopilando URLs y navegando a cada una."""
     logger = logging.getLogger(__name__)
 
@@ -105,21 +94,33 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
         try:
             client_sync.sessions.navigate(id=sess_id, url=full_detail_url)
             time.sleep(3)
-            
+
+            # Construir esquema dinámico
+            properties = {
+                "title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"},
+                "precio_contado": {"type": "number"}, "moneda": {"type": "string"},
+                "combustible": {"type": "string"}, "transmision": {"type": "string"},
+                "marca": {"type": "string"}, "modelo": {"type": "string"},
+                "version": {"type": "string"}, "ubicacion": {"type": "string"},
+                "url": {"type": "string", "format": "uri"},
+                "reservado": {"type": "boolean"}
+            }
+            if custom_fields:
+                for field in custom_fields:
+                    properties[field] = {"type": "string"}
+
+            instruction = custom_instruction or (
+                "Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), "
+                "precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, "
+                "marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la "
+                "sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. "
+                "Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones.")
+
             detail_res = client_sync.sessions.extract(
                 id=sess_id,
-                instruction="Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones.",
+                instruction=instruction,
                 schema={
-                    "type": "object", 
-                    "properties": {
-                        "title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"},
-                        "precio_contado": {"type": "number"}, "moneda": {"type": "string"},
-                        "combustible": {"type": "string"}, "transmision": {"type": "string"},
-                        "marca": {"type": "string"}, "modelo": {"type": "string"},
-                        "version": {"type": "string"}, "ubicacion": {"type": "string"},
-                        "url": {"type": "string", "format": "uri"},
-                        "reservado": {"type": "boolean", "description": "Indica si el vehículo aparece como 'Reservado'"}
-                    }
+                    "type": "object", "properties": properties
                 }
             )
             item = detail_res.data.result
@@ -130,62 +131,3 @@ def extract_meli_details(client_sync, sess_id, results_url, max_publications, ta
             logger.error(f"⚠️ Error en vehículo {i}: {e}")
 
     return all_extracted_items
-
-def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
-    results_url = "https://autos.mercadolibre.com.ar/chevrolet/agile/2014/_ITEM*CONDITION_2230581#applied_filter_id%3DVEHICLE_YEAR%26applied_filter_name%3DA%C3%B1o%26applied_filter_order%3D8%26applied_value_id%3D%5B2014-2014%5D%26applied_value_name%3D2014%26applied_value_order%3D4%26applied_value_results%3D49%26is_custom%3Dfalse"
-    
-    target_version = "AGILE - 1.4 LT L09"
-    max_publications = 5  # Límite de publicaciones a extraer
-    
-    # Variables para el medidor de tokens
-    usage_stats = {"total_tokens": 0, "total_cost_approx": 0.0}
-
-    def log_token_usage(action_name):
-        """Obtiene y muestra el uso de tokens acumulado y el delta de la acción."""
-        try:
-            metrics = client_sync.sessions.get_metrics(id=sess_id)
-            new_total = metrics.data.total_tokens
-            delta = new_total - usage_stats["total_tokens"]
-            usage_stats["total_tokens"] = new_total
-            logger.info(f"📊 [Tokens] {action_name} - Usados: {delta} | Total acumulado: {new_total}")
-        except Exception as e:
-            logger.debug(f"⚠️ No se pudieron obtener métricas: {e}")
-
-    # Create client using environment variables
-    # Optimizaciones de costo: dom_cache=True reduce el procesamiento repetitivo del DOM
-    client_sync = Stagehand(
-        server="local",
-        model_api_key="AIzaSyCF-XWzm-dQuPk45pPlEIsGzENjoPf1PHY",
-        local_headless=False,
-        local_ready_timeout_s=20.0, 
-        timeout=300.0
-    )
-    
-    # Usamos gemini-1.5-flash por ser el más costo-eficiente para tareas de navegación
-    model_name = "google/gemini-2.5-flash"
-
-    session = client_sync.sessions.start(
-        model_name=model_name,
-        browser={"type": "local", "launchOptions": {"headless": False}},
-    )
-    sess_id = session.data.session_id
-    
-    logger.info(f"📍 Navegando a la lista de resultados: {results_url}")
-    client_sync.sessions.navigate(id=sess_id, url=results_url)
-    time.sleep(5) # Espera aumentada para asegurar que el DOM esté completamente cargado
-
-    # Llamada a la función modularizada para pruebas
-    results = extract_meli_details(client_sync, sess_id, results_url, max_publications, target_version, model_name)
-    for i, res in enumerate(results, 1):
-        print(f"✅ Datos vehículo {i}: {res}")
-
-    # End the session to clean up resources
-    logger.info(f"🏁 Fin del proceso. Uso total de tokens: {usage_stats['total_tokens']}")
-    client_sync.sessions.end(id=sess_id)
-    client_sync.close()
-
-if __name__ == "__main__":
-    main()

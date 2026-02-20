@@ -18,7 +18,7 @@ try:
 except ImportError:
     Stagehand = None
 
-def extract_kavak_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, progress_callback=None):
+def extract_kavak_details(client_sync, sess_id, results_url, max_publications, target_version, model_name, custom_instruction=None, custom_fields=None, progress_callback=None):
     """Extrae detalles de publicaciones de Kavak utilizando la lógica de navegación y clic."""
     logger = logging.getLogger(__name__)
 
@@ -97,20 +97,27 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, t
                 )
                 time.sleep(5)
 
+                # Construir esquema dinámico para soportar campos personalizados
+                properties = {
+                    "title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"},
+                    "precio_contado": {"type": "number"}, "moneda": {"type": "string"},
+                    "combustible": {"type": "string"}, "transmision": {"type": "string"},
+                    "marca": {"type": "string"}, "modelo": {"type": "string"},
+                    "version": {"type": "string"}, "ubicacion": {"type": "string"},
+                    "url": {"type": "string", "format": "uri"},
+                    "reservado": {"type": "boolean", "description": "Indica si el vehículo aparece como 'Reservado'"}
+                }
+                if custom_fields:
+                    for field in custom_fields:
+                        properties[field] = {"type": "string"}
+
+                instruction = custom_instruction or "Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones."
+
                 detail_check = client_sync.sessions.extract(
                     id=sess_id,
-                    instruction="Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones.",
+                    instruction=instruction,
                     schema={
-                        "type": "object", 
-                        "properties": {
-                            "title": {"type": "string"}, "year": {"type": "string"}, "km": {"type": "number"},
-                            "precio_contado": {"type": "number"}, "moneda": {"type": "string"},
-                            "combustible": {"type": "string"}, "transmision": {"type": "string"},
-                            "marca": {"type": "string"}, "modelo": {"type": "string"},
-                            "version": {"type": "string"}, "ubicacion": {"type": "string"},
-                            "url": {"type": "string", "format": "uri"},
-                            "reservado": {"type": "boolean", "description": "Indica si el vehículo aparece como 'Reservado'"}
-                        }
+                        "type": "object", "properties": properties
                     }
                 )
                 item = detail_check.data.result

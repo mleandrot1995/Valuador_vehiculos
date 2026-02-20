@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS extractions (
     fecha_publicacion VARCHAR(100),
     reservado BOOLEAN,
     url TEXT,
-    site VARCHAR(50) -- kavak, meli, etc.
+    site VARCHAR(50), -- kavak, meli, etc.
+    datos_adicionales JSONB DEFAULT '{}'::jsonb
 );
 
 -- 3. Histórico de Tipo de Cambio
