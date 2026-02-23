@@ -139,6 +139,16 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # 0. Calcular promedios de mercado base (independiente de si hay stock o no)
+        meli_avg = site_averages.get("mercadolibre", 0)
+        kavak_avg = site_averages.get("kavak", 0)
+        tiendacars_avg = site_averages.get("tiendacars", 0)
+        motormax_avg = site_averages.get("motormax", 0)
+        autocity_avg = site_averages.get("autocity", 0)
+        randazzo_avg = site_averages.get("randazzo", 0)
+        site_prices = [p for p in [meli_avg, kavak_avg, tiendacars_avg, motormax_avg, autocity_avg, randazzo_avg] if p > 0]
+        precio_propuesto_base = round(sum(site_prices) / len(site_prices), 2) if site_prices else 0
+
         # 1. Tabla Transaccional: extractions
         if extracted_data:
             insert_query = """
@@ -159,10 +169,13 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
         # 2. Tabla de Resultados: PreciosAutosUsados
         if request_data.patente:
             # Obtener datos de stock_usados como referencia
-            cur.execute("SELECT * FROM stock_usados WHERE Patente = %s", (request_data.patente,))
+            cur.execute('SELECT * FROM stock_usados WHERE Patente = %s', (request_data.patente,))
             stock_car = cur.fetchone()
             
             if stock_car:
+                # Normalizar claves a minúsculas para evitar KeyErrors con RealDictCursor
+                stock_car = {k.lower(): v for k, v in stock_car.items()}
+                
                 # Fechas de ejecución
                 today = date.today()
                 sunday = today - timedelta(days=(today.weekday() + 1) % 7)
@@ -171,32 +184,33 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 
                 # Obtener registro previo si existe en la misma semana
                 cur.execute("SELECT * FROM PreciosAutosUsados WHERE ID = %s", (id_transaccion,))
-                prev = cur.fetchone()
+                prev_raw = cur.fetchone()
+                prev = {k.lower(): v for k, v in prev_raw.items()} if prev_raw else None
                 
                 # Consolidar promedios: Priorizar nuevos resultados, sino mantener previos
-                meli = site_averages.get("mercadolibre", float(prev['meli'] or 0) if prev else 0)
-                kavak = site_averages.get("kavak", float(prev['kavak'] or 0) if prev else 0)
-                tiendacars = site_averages.get("tiendacars", float(prev['tiendacars'] or 0) if prev else 0)
-                motormax = site_averages.get("motormax", float(prev['motormax'] or 0) if prev else 0)
-                autocity = site_averages.get("autocity", float(prev['autocity'] or 0) if prev else 0)
-                randazzo = site_averages.get("randazzo", float(prev['randazzo'] or 0) if prev else 0)
+                meli = site_averages.get("mercadolibre") or float(prev.get('meli', 0) if prev else 0)
+                kavak = site_averages.get("kavak") or float(prev.get('kavak', 0) if prev else 0)
+                tiendacars = site_averages.get("tiendacars") or float(prev.get('tiendacars', 0) if prev else 0)
+                motormax = site_averages.get("motormax") or float(prev.get('motormax', 0) if prev else 0)
+                autocity = site_averages.get("autocity") or float(prev.get('autocity', 0) if prev else 0)
+                randazzo = site_averages.get("randazzo") or float(prev.get('randazzo', 0) if prev else 0)
 
-                precio_toma = float(stock_car['preciodetoma'] or 0)
-                costos_reparaciones = float(stock_car['costosreparaciones'] or 0)
+                precio_toma = float(stock_car.get('preciodetoma') or 0)
+                costos_reparaciones = float(stock_car.get('costosreparaciones') or 0)
                 precio_toma_total = precio_toma + costos_reparaciones
                 
-                indice_mensual = float(stock_car['indice'] or 0)
+                indice_mensual = float(stock_car.get('indice') or 0)
                 days_in_month = calendar.monthrange(today.year, today.month)[1]
                 indice_diario = indice_mensual / days_in_month
                 
-                dias_lote = int(stock_car['diaslote'] or 0)
+                dias_lote = int(stock_car.get('diaslote') or 0)
 
                 # Precio Propuesto (Promedio de sitios con valor > 0)
                 site_prices = [p for p in [meli, kavak, tiendacars, motormax, autocity, randazzo] if p > 0]
                 precio_propuesto = round(sum(site_prices) / len(site_prices), 2) if site_prices else 0
                 
-                precio_de_lista = float(stock_car['preciodelista'] or 0)
-                precio_de_venta = float(stock_car['preciodeventa'] or 0)
+                precio_de_lista = float(stock_car.get('preciodelista') or 0)
+                precio_de_venta = float(stock_car.get('preciodeventa') or 0)
                 
                 # --- CÁLCULOS DE NEGOCIO ---
                 margen_hist_compra = (precio_propuesto - precio_toma_total) / precio_propuesto if precio_propuesto > 0 else 0
@@ -212,14 +226,14 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 margen_idx_costo_venta = (descuento_recargos - precio_de_lista) / descuento_recargos if descuento_recargos != 0 else 0
                 
                 # Diferencia ASOFIX y PE
-                valor_asofix = float(prev['valor_propuesto_por_asofix'] or 0) if prev else 0
+                valor_asofix = float(prev.get('valor_propuesto_por_asofix', 0) if prev else 0)
                 dif_asofix_pe = 1 - (valor_asofix / precio_de_lista) if precio_de_lista > 0 else 0
                 
                 # Valor de Toma a X días
                 valor_toma_x_dias = float(precio_toma_total * (1 + (indice_diario * dif_asofix_pe) / 100))
                 
                 current_year = date.today().year
-                cuenta = (((current_year - int(stock_car['anio'])) * 15000) - int(stock_car['km'] or 0)) / 5000.0 * 0.0075
+                cuenta = (((current_year - int(stock_car.get('anio') or current_year)) * 15000) - int(stock_car.get('km') or 0)) / 5000.0 * 0.0075
                 
                 # Costo Indexado a X días de Venta
                 costo_idx_venta_days = float(precio_toma_total * (1 + (0.04 / 30) * dias_lote))
@@ -263,21 +277,45 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 """
                 
                 cur.execute(upsert_query, (
-                    id_transaccion, stock_car['patente'], stock_car['marca'], stock_car['modelo'], stock_car['anio'], stock_car['km'], stock_car['color'], stock_car['chasis'], stock_car['cotizacionnro'], stock_car['ubicacion'],
-                    stock_car['canaldeventa'], precio_de_lista, precio_toma, dias_lote, stock_car['fechaingreso'], stock_car['sucursal'],
+                    id_transaccion, stock_car.get('patente'), stock_car.get('marca'), stock_car.get('modelo'), stock_car.get('anio'), stock_car.get('km'), stock_car.get('color'), stock_car.get('chasis'), stock_car.get('cotizacionnro'), stock_car.get('ubicacion'),
+                    stock_car.get('canaldeventa'), precio_de_lista, precio_toma, dias_lote, stock_car.get('fechaingreso'), stock_car.get('sucursal'),
                     costos_reparaciones, precio_toma_total, indice_diario,
-                        costo_45_dias, stock_car['canaldecompra'], float(margen_hist_compra),
+                        costo_45_dias, stock_car.get('canaldecompra'), float(margen_hist_compra),
                         float(costo_45_dias), float(precio_propuesto), float(meli), float(kavak), float(tiendacars), float(motormax), float(autocity), float(randazzo),
                     dif_pp_pe, margen_hist_costo_pe, precio_de_venta, descuento_recargos,
                     margen_idx_costo_venta, valor_toma_x_dias, dif_asofix_pe,
-                        stock_car['tieneventa'], semana_ejecucion, today, float(cuenta), float(costo_idx_venta_days), float(margen_idx_costo)
+                        stock_car.get('tieneventa'), semana_ejecucion, today, float(cuenta), float(costo_idx_venta_days), float(margen_idx_costo)
                 ))
                 
                 if progress_callback:
                     progress_callback(f"✅ Valuación registrada en PreciosAutosUsados (Semana: {semana_ejecucion})")
 
-            cur.execute("SELECT * FROM PreciosAutosUsados WHERE ID = %s", (id_transaccion,))
-            updated_stock = cur.fetchall()
+                cur.execute("SELECT * FROM PreciosAutosUsados WHERE ID = %s", (id_transaccion,))
+                rows = cur.fetchall()
+                updated_stock = [{k.lower(): v for k, v in row.items()} for row in rows]
+            else:
+                if progress_callback:
+                    progress_callback(f"⚠️ Patente {request_data.patente} no encontrada. Mostrando promedios de mercado.")
+                updated_stock = [{
+                    "patente": request_data.patente,
+                    "preciopropuesto": precio_propuesto_base,
+                    "meli": meli_avg,
+                    "kavak": kavak_avg,
+                    "marca": request_data.brand,
+                    "modelo": request_data.model,
+                    "anio": request_data.year
+                }]
+        else:
+            # Si no hay patente, devolvemos los promedios de mercado para que la pestaña 'Resultados' no esté vacía
+            updated_stock = [{
+                "patente": "S/P",
+                "preciopropuesto": precio_propuesto_base,
+                "meli": meli_avg,
+                "kavak": kavak_avg,
+                "marca": request_data.brand,
+                "modelo": request_data.model,
+                "anio": request_data.year
+            }]
 
         conn.commit()
         cur.close()
@@ -385,8 +423,8 @@ async def scrape_cars(request: ScrapeRequest):
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": msg, "screenshot": screenshot})
 
         # 1. Obtener tipo de cambio
-        log_status(f"🚀 Iniciando proceso para {request.brand} {request.model} {request.year}...")
-        log_status("💵 Obteniendo tipo de cambio actualizado...")
+        log_status(f" Buscando {request.brand} {request.model} ({request.year})...")
+        log_status("💵 Actualizando tipo de cambio...")
         exchange_rate = await get_exchange_rate()
         log_status(f"✅ Tipo de cambio: {exchange_rate} ARS/USD")
 
@@ -483,6 +521,8 @@ async def scrape_cars(request: ScrapeRequest):
 
             if not all_extracted_items:
                 progress_callback(f"⚠️ [{site_name.upper()}] No se extrajeron publicaciones.")
+            else:
+                progress_callback(f"✅ [{site_name.upper()}] Extracción finalizada.")
 
             return {"site": site_name, "autos": all_extracted_items}
 
@@ -519,9 +559,10 @@ async def scrape_cars(request: ScrapeRequest):
                 site_name = raw_results.get("site", "Desconocido").lower()
                 
                 if items:
-                    log_status(f"📝 Procesando {len(items)} publicaciones de {site_name}...")
+                    log_status(f" Analizando {len(items)} resultados de {site_name.upper()}...")
                     processed_items_for_site = []
-                    for item in items:
+                    for idx, item in enumerate(items, 1):
+                        log_status(f"⚙️ [{site_name.upper()}] Procesando publicación {idx}/{len(items)}...")
                         try:
                             def clean_num(v):
                                 if v is None: return 0.0
@@ -570,6 +611,7 @@ async def scrape_cars(request: ScrapeRequest):
                     if processed_items_for_site:
                         site_df = pd.DataFrame(processed_items_for_site)
                         site_averages[site_name] = float(site_df[site_df['price_ars'] > 0]['price_ars'].mean())
+                        log_status(f"✅ [{site_name.upper()}] Datos normalizados correctamente.")
 
             # Respuesta Final
             if extracted_data:
@@ -593,7 +635,7 @@ async def scrape_cars(request: ScrapeRequest):
                     # Persistencia en DB por sitio para actualizar columnas específicas
                     updated_stock = save_to_db(extracted_data, site_averages, request, progress_callback=log_status)
                     
-                    log_status("✨ Proceso de guardado y análisis finalizado correctamente.")
+                    log_status("✅ Scraping y valuación finalizados con éxito.")
 
                     # Helper para serializar tipos no estándar de la base de datos (Decimal, datetime, date)
                     def json_serial(obj):
@@ -655,11 +697,14 @@ async def get_valuations_history():
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        for r in rows:
-            for k, v in r.items():
-                if isinstance(v, Decimal): r[k] = float(v)
-                elif isinstance(v, (datetime, date)): r[k] = v.isoformat()
-        return rows
+        processed_rows = []
+        for row in rows:
+            new_row = {}
+            for k, v in row.items():
+                val = float(v) if isinstance(v, Decimal) else (v.isoformat() if isinstance(v, (datetime, date)) else v)
+                new_row[k.lower()] = val
+            processed_rows.append(new_row)
+        return processed_rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
