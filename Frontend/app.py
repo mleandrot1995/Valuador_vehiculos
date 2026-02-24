@@ -153,6 +153,11 @@ st.markdown("""
     /* Clase para forzar texto blanco en fondos oscuros (Instrucciones) */
     .instruction-box, .instruction-box p, .instruction-box span, .instruction-box strong { color: white !important; }
 
+    /* Ocultar el botón de Deploy de Streamlit */
+    [data-testid="stDeployButton"] {
+        display: none;
+    }
+
     /* Hacer el header original invisible pero permitir que el botón sea visible debajo de nuestro header */
     header[data-testid="stHeader"] {
         background: transparent !important;

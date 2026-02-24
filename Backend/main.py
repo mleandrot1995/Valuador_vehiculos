@@ -2,6 +2,7 @@ import asyncio
 import sys
 import logging
 from typing import List
+import math
 import json
 import traceback
 import os
@@ -292,15 +293,25 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
 
                 cur.execute("SELECT * FROM PreciosAutosUsados WHERE ID = %s", (id_transaccion,))
                 rows = cur.fetchall()
-                updated_stock = [{k.lower(): v for k, v in row.items()} for row in rows]
+                updated_stock = []
+                for row in rows:
+                    clean_row = {}
+                    for k, v in row.items():
+                        val = v
+                        if isinstance(v, Decimal):
+                            val = float(v)
+                        if isinstance(val, float) and not math.isfinite(val):
+                            val = 0.0
+                        clean_row[k.lower()] = val
+                    updated_stock.append(clean_row)
             else:
                 if progress_callback:
                     progress_callback(f"⚠️ Patente {request_data.patente} no encontrada. Mostrando promedios de mercado.")
                 updated_stock = [{
                     "patente": request_data.patente,
-                    "preciopropuesto": precio_propuesto_base,
-                    "meli": meli_avg,
-                    "kavak": kavak_avg,
+                    "preciopropuesto": precio_propuesto_base if math.isfinite(precio_propuesto_base) else 0.0,
+                    "meli": meli_avg if math.isfinite(meli_avg) else 0.0,
+                    "kavak": kavak_avg if math.isfinite(kavak_avg) else 0.0,
                     "marca": request_data.brand,
                     "modelo": request_data.model,
                     "anio": request_data.year
@@ -309,9 +320,9 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
             # Si no hay patente, devolvemos los promedios de mercado para que la pestaña 'Resultados' no esté vacía
             updated_stock = [{
                 "patente": "S/P",
-                "preciopropuesto": precio_propuesto_base,
-                "meli": meli_avg,
-                "kavak": kavak_avg,
+                "preciopropuesto": precio_propuesto_base if math.isfinite(precio_propuesto_base) else 0.0,
+                "meli": meli_avg if math.isfinite(meli_avg) else 0.0,
+                "kavak": kavak_avg if math.isfinite(kavak_avg) else 0.0,
                 "marca": request_data.brand,
                 "modelo": request_data.model,
                 "anio": request_data.year
@@ -610,7 +621,8 @@ async def scrape_cars(request: ScrapeRequest):
                     
                     if processed_items_for_site:
                         site_df = pd.DataFrame(processed_items_for_site)
-                        site_averages[site_name] = float(site_df[site_df['price_ars'] > 0]['price_ars'].mean())
+                        avg = site_df[site_df['price_ars'] > 0]['price_ars'].mean()
+                        site_averages[site_name] = float(avg) if pd.notnull(avg) and math.isfinite(avg) else 0.0
                         log_status(f"✅ [{site_name.upper()}] Datos normalizados correctamente.")
 
             # Respuesta Final
@@ -642,7 +654,8 @@ async def scrape_cars(request: ScrapeRequest):
                         if isinstance(obj, (datetime, date)):
                             return obj.isoformat()
                         if isinstance(obj, Decimal):
-                            return float(obj)
+                            val = float(obj)
+                            return val if math.isfinite(val) else 0.0
                         raise TypeError(f"Type {type(obj)} not serializable")
 
                     yield json.dumps({
@@ -681,7 +694,9 @@ async def get_extractions_history():
         cur.close()
         conn.close()
         for r in rows:
-            if isinstance(r['price'], Decimal): r['price'] = float(r['price'])
+            if isinstance(r['price'], Decimal): 
+                val = float(r['price'])
+                r['price'] = val if math.isfinite(val) else 0.0
             if r['fecha_transaccion']: r['fecha_transaccion'] = r['fecha_transaccion'].isoformat()
         return rows
     except Exception as e:
@@ -701,7 +716,16 @@ async def get_valuations_history():
         for row in rows:
             new_row = {}
             for k, v in row.items():
-                val = float(v) if isinstance(v, Decimal) else (v.isoformat() if isinstance(v, (datetime, date)) else v)
+                if isinstance(v, Decimal):
+                    val = float(v)
+                elif isinstance(v, (datetime, date)):
+                    val = v.isoformat()
+                else:
+                    val = v
+                
+                if isinstance(val, float) and not math.isfinite(val):
+                    val = 0.0
+                
                 new_row[k.lower()] = val
             processed_rows.append(new_row)
         return processed_rows
