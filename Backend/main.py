@@ -147,8 +147,12 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
         motormax_avg = site_averages.get("motormax", 0)
         autocity_avg = site_averages.get("autocity", 0)
         randazzo_avg = site_averages.get("randazzo", 0)
-        site_prices = [p for p in [meli_avg, kavak_avg, tiendacars_avg, motormax_avg, autocity_avg, randazzo_avg] if p > 0]
-        precio_propuesto_base = round(sum(site_prices) / len(site_prices), 2) if site_prices else 0
+        
+        # Precio Mercado (PM): Promedio específico de MeLi y Kavak
+        if meli_avg > 0 and kavak_avg > 0:
+            precio_propuesto_base = round((meli_avg + kavak_avg) / 2, 2)
+        else:
+            precio_propuesto_base = meli_avg if meli_avg > 0 else kavak_avg
 
         # 1. Tabla Transaccional: extractions
         if extracted_data:
@@ -188,13 +192,13 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 prev_raw = cur.fetchone()
                 prev = {k.lower(): v for k, v in prev_raw.items()} if prev_raw else None
                 
-                # Consolidar promedios: Priorizar nuevos resultados, sino mantener previos
-                meli = site_averages.get("mercadolibre") or float(prev.get('meli', 0) if prev else 0)
-                kavak = site_averages.get("kavak") or float(prev.get('kavak', 0) if prev else 0)
-                tiendacars = site_averages.get("tiendacars") or float(prev.get('tiendacars', 0) if prev else 0)
-                motormax = site_averages.get("motormax") or float(prev.get('motormax', 0) if prev else 0)
-                autocity = site_averages.get("autocity") or float(prev.get('autocity', 0) if prev else 0)
-                randazzo = site_averages.get("randazzo") or float(prev.get('randazzo', 0) if prev else 0)
+                # Consolidar promedios: SOLO resultados de la ejecución actual (según solicitud)
+                meli = float(site_averages.get("mercadolibre", 0))
+                kavak = float(site_averages.get("kavak", 0))
+                tiendacars = float(site_averages.get("tiendacars", 0))
+                motormax = float(site_averages.get("motormax", 0))
+                autocity = float(site_averages.get("autocity", 0))
+                randazzo = float(site_averages.get("randazzo", 0))
 
                 precio_toma = float(stock_car.get('preciodetoma') or 0)
                 costos_reparaciones = float(stock_car.get('costosreparaciones') or 0)
@@ -206,9 +210,11 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 
                 dias_lote = int(stock_car.get('diaslote') or 0)
 
-                # Precio Propuesto (Promedio de sitios con valor > 0)
-                site_prices = [p for p in [meli, kavak, tiendacars, motormax, autocity, randazzo] if p > 0]
-                precio_propuesto = round(sum(site_prices) / len(site_prices), 2) if site_prices else 0
+                # Precio Propuesto (PM): Promedio específico de MeLi y Kavak
+                if meli > 0 and kavak > 0:
+                    precio_propuesto = round((meli + kavak) / 2, 2)
+                else:
+                    precio_propuesto = meli if meli > 0 else kavak
                 
                 precio_de_lista = float(stock_car.get('preciodelista') or 0)
                 precio_de_venta = float(stock_car.get('preciodeventa') or 0)
@@ -227,7 +233,7 @@ def save_to_db(extracted_data, site_averages, request_data, progress_callback=No
                 margen_idx_costo_venta = (descuento_recargos - precio_de_lista) / descuento_recargos if descuento_recargos != 0 else 0
                 
                 # Diferencia ASOFIX y PE
-                valor_asofix = float(prev.get('valor_propuesto_por_asofix', 0) if prev else 0)
+                valor_asofix = float((prev.get('valor_propuesto_por_asofix') or 0) if prev else 0)
                 dif_asofix_pe = 1 - (valor_asofix / precio_de_lista) if precio_de_lista > 0 else 0
                 
                 # Valor de Toma a X días

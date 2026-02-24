@@ -1,63 +1,48 @@
-# AI Car Scraper - Proyecto Fullstack
+# AI Car Scraper 🚗🤖
 
-Este proyecto es una aplicación de scraping asistido por IA para autos usados, estructurada en un monorepo con un backend en FastAPI y un frontend en Streamlit.
+Sistema inteligente de scraping de vehículos utilizando FastAPI, Streamlit y Stagehand (IA).
 
-## Estructura del Proyecto
+## 📋 Requisitos Previos
 
-*   `/Backend`: API REST construida con FastAPI, integración con Stagehand (IA) y Playwright.
-*   `/Frontend`: Dashboard interactivo con Streamlit.
+- **Python 3.10+**
+- **Node.js 18+** (Requerido para Stagehand)
+- **PostgreSQL**
 
-## 🚀 Guía de Instalación Local (Fuera de IDX)
+## 🛠️ Instalación
 
-### 1. Prerrequisitos
-*   **Python 3.8+** instalado.
-*   **Node.js 20+** instalado (Requerido por Stagehand). [Descargar aquí](https://nodejs.org/).
-*   **PostgreSQL** instalado y en ejecución.
-*   **Git** instalado.
+1. **Clonar el repositorio e ingresar a la carpeta:**
+   ```bash
+   cd Valuador_vehiculos
+   ```
 
-### 2. Clonar el repositorio
-```bash
-git clone https://github.com/mleandrot1995/Valuador_vehiculos.git
-cd Valuador_vehiculos
-```
+2. **Crear y activar entorno virtual:**
+   ```bash
+   python -m venv .venv
+   # Windows:
+   .venv\Scripts\activate
+   # Linux/Mac:
+   source .venv/bin/activate
+   ```
 
-### 3. Configurar Entorno Virtual
-```bash
-# Windows
-python -m venv .venv
-.venv\Scripts\activate
+3. **Instalar dependencias de Python:**
+   ```bash
+   pip install -r Backend/requirements.txt
+   pip install -r Frontend/requirements.txt
+   ```
 
-# Mac/Linux
-python3 -m venv .venv
-source .venv/bin/activate
-```
+4. **Instalar Playwright y Stagehand:**
+   ```bash
+   playwright install
+   npm install -g stagehand
+   ```
 
-### 4. Instalar Dependencias
-```bash
-pip install -r Backend/requirements.txt
-pip install -r Frontend/requirements.txt
-```
+5. **Configurar variables de entorno:**
+   Copia el archivo `.env.example` a `.env` y completa tus credenciales.
 
-### 5. Configuración de Stagehand (Windows)
-Es necesario inicializar el motor de Stagehand manualmente en la carpeta del Backend:
-```powershell
-cd Backend
-npm install stagehand
-node .\node_modules\stagehand\lib\index.js init
-python download-binary.py
-```
+## 🚀 Ejecución
 
-### 6. Instalar Navegadores de Playwright
-```bash
-playwright install
-```
+Para iniciar tanto el Backend como el Frontend simultáneamente, ejecuta:
 
-### 7. Ejecutar la Aplicación
 ```bash
 python run_app.py
 ```
-
----
-
-## 🛠️ Desarrollo en Firebase Studio / Nix
-Este proyecto incluye configuración para **Project IDX/Nix** en `.idx/dev.nix`.

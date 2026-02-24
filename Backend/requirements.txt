@@ -1,10 +1,8 @@
 fastapi
 uvicorn
-pandas
-playwright
-google-generativeai
-httpx
-python-dotenv
+sqlalchemy
 psycopg2-binary
-pydantic
-git+https://github.com/browserbase/stagehand-python.git
+pydantic-settings
+python-dotenv
+playwright
+pytest

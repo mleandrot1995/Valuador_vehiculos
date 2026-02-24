@@ -567,11 +567,19 @@ if view == "🚀 Scraper":
                             tab1, tab2, tab3 = st.tabs(["🔍 Resultados de Scraping", "📈 Resultados", "📋 Log de Proceso"])
                             
                             with tab1:
+                                # Extraer datos de updated_stock para las métricas específicas
+                                stock_info = result.get("updated_stock", [{}])[0]
+                                meli_val = float(stock_info.get("meli", 0))
+                                kavak_val = float(stock_info.get("kavak", 0))
+                                precio_mercado = float(stock_info.get("preciopropuesto", 0))
+
                                 # --- MÉTRICAS EN COLUMNAS ---
-                                m1, m2, m3 = st.columns(3)
-                                m1.metric("Precio Promedio", f"${result['stats']['average_price']:,.0f} ARS")
-                                m2.metric("Vehículos Encontrados", len(result['data']))
-                                m3.metric("Dólar Aplicado", f"${result.get('exchange_rate', 0):,.2f}")
+                                m1, m2, m3, m4 = st.columns(4)
+                                m1.metric("Promedio MeLi", f"${meli_val:,.0f} ARS" if meli_val > 0 else "N/A")
+                                m2.metric("Promedio Kavak", f"${kavak_val:,.0f} ARS" if kavak_val > 0 else "N/A")
+                                m3.metric("Precio Mercado", f"${precio_mercado:,.0f} ARS" if precio_mercado > 0 else "N/A", 
+                                          help="Promedio calculado entre Mercado Libre y Kavak")
+                                m4.metric("Dólar Aplicado", f"${result.get('exchange_rate', 0):,.2f}")
                                 st.divider()
 
                                 df = pd.DataFrame(result["data"])
