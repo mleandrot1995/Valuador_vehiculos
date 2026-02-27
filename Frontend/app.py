@@ -230,9 +230,8 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 # 1. Interfaz de Usuario: Sidebar
 with st.sidebar:
     st.header("Configuración")
-    api_key = st.text_input("API Key (Gemini/Ollama)", type="password")
-    model_provider = st.selectbox("Proveedor de IA", ["gemini", "ollama"])
-    base_url = st.text_input("Base URL (Ollama)", value="http://localhost:11434")
+    api_key = st.text_input("API Key (Gemini)", type="password")
+    model_provider = st.selectbox("Proveedor de IA", ["gemini"])
     show_browser = st.checkbox("Mostrar navegador local", value=True)
     
     view = st.radio("Navegación", ["🚀 Scraper", "📜 Historial"])
@@ -338,7 +337,8 @@ if view == "🚀 Scraper":
             "**Regla Críticas:**\n"
             "   *   Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo.\n"
             "   *   Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. "
-            "   *   Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones."
+            "   *   Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones.\n"
+            "**FILTRO CRÍTICO:** Compara la versión del vehículo con '{version}'. Si la coincidencia es menor al 60%, establece 'version_match' en false. De lo contrario, true."
         )
         
         DEFAULT_NAV_MELI = (

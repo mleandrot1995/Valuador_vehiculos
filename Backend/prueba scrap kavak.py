@@ -105,13 +105,17 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, t
                     "marca": {"type": "string"}, "modelo": {"type": "string"},
                     "version": {"type": "string"}, "ubicacion": {"type": "string"},
                     "url": {"type": "string", "format": "uri"},
-                    "reservado": {"type": "boolean", "description": "Indica si el vehículo aparece como 'Reservado'"}
+                    "reservado": {"type": "boolean", "description": "Indica si el vehículo aparece como 'Reservado'"},
+                    "version_match": {"type": "boolean", "description": "Indica si la versión coincide al menos en un 60% con la buscada"}
                 }
                 if custom_fields:
                     for field in custom_fields:
                         properties[field] = {"type": "string"}
 
-                instruction = custom_instruction or "Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones."
+                instruction = custom_instruction or (
+                    "Extrae el título principal, año, kilometraje (solo el número, interpretando 'k' como mil, ej: 136k km = 136000), precio al contado (solo el número, sin símbolos ni separadores), moneda (ARS o USD), combustible, transmisión, marca, modelo, versión, ubicación y la URL actual de la página. REGLA CRÍTICA: Extrae el precio ÚNICAMENTE de la sección de información principal del vehículo. Si el vehículo está 'Reservado' y no tiene precio propio visible, pon 0. Ignora terminantemente precios de banners de 'Otras opciones de compra', carruseles de 'autos similares' o recomendaciones.\n"
+                    f"**FILTRO CRÍTICO:** Compara la versión del vehículo con '{target_version}'. Si la coincidencia es menor al 60%, establece 'version_match' en false. De lo contrario, true."
+                )
 
                 detail_check = client_sync.sessions.extract(
                     id=sess_id,
@@ -122,6 +126,12 @@ def extract_kavak_details(client_sync, sess_id, results_url, max_publications, t
                 )
                 item = detail_check.data.result
                 if item:
+                    # Verificación de coincidencia de versión para saltear validación
+                    if item.get("version_match") is False:
+                        notify(f"⏭️ Vehículo #{i}: La versión '{item.get('version')}' no coincide con '{target_version}'. Saltando...")
+                        success = True # Evita reintentos
+                        break
+
                     detail_year = item.get("year", "")
                     detail_km = item.get("km", "")
                     notify(f"📄 Detalle: {detail_year} | {detail_km}")

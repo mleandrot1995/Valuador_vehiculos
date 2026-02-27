@@ -472,6 +472,15 @@ async def scrape_cars(request: ScrapeRequest):
             site_nav_instr = request.nav_instr_kavak if "kavak" in site_name else request.nav_instr_meli
             site_ext_instr = request.ext_instr_kavak if "kavak" in site_name else request.ext_instr_meli
 
+            # Formatear instrucciones de extracción si contienen variables dinámicas
+            if site_ext_instr:
+                try:
+                    site_ext_instr = site_ext_instr.format(
+                        marca=request.brand, modelo=request.model, 
+                        anio=request.year, version=request.version
+                    )
+                except: pass
+
             instruction = get_full_navigation_instruction(domain, request.brand, request.model, request.year, request.version, site_nav_instr)
             
             try:
